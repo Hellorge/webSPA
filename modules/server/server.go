@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+
+	"gogogo/modules/metrics"
 )
 
 type Server struct {
@@ -68,8 +70,14 @@ func New(handlers Handlers, cfg config.Config) *Server {
 	mux.Handle("/", handlers.Web)
 
 	var handler http.Handler = mux
+
+	// Apply metrics if enabled
+	if cfg.Server.MetricsEnabled {
+		handler = metricsMiddleware(handler)
+	}
+
 	if opts.EnableHTTP2 && opts.TLSConfig == nil {
-		handler = h2c.NewHandler(mux, &http2.Server{})
+		handler = h2c.NewHandler(handler, &http2.Server{})
 	}
 
 	return &Server{
@@ -93,6 +101,9 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
+	// Divine Speed: Enable TCP Fast Open once on the listener FD
+	EnableFastOpen(ln)
+
 	ln = &tcpKeepAliveListener{
 		TCPListener:     ln.(*net.TCPListener),
 		keepAlivePeriod: s.config.TCPKeepAlive,
@@ -115,53 +126,36 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
 
-// type tcpKeepAliveListener struct {
-// 	*net.TCPListener
-// 	keepAlivePeriod time.Duration
-// }
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+	size   int
+}
 
-// func (ln *tcpKeepAliveListener) Accept() (net.Conn, error) {
-// 	tc, err := ln.AcceptTCP()
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	tc.SetKeepAlive(true)
-// 	tc.SetKeepAlivePeriod(ln.keepAlivePeriod)
-// 	tc.SetNoDelay(true)
-// 	return tc, nil
-// }
+func (rw *responseWriter) WriteHeader(status int) {
+	rw.status = status
+	rw.ResponseWriter.WriteHeader(status)
+}
 
-// func (ln *tcpKeepAliveListener) Accept() (net.Conn, error) {
-//     tc, err := ln.AcceptTCP()
-//     if err != nil {
-//         return nil, err
-//     }
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if rw.status == 0 {
+		rw.status = http.StatusOK
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.size += n
+	return n, err
+}
 
-//     if err = tc.SetKeepAlive(true); err != nil {
-//         tc.Close()
-//         return nil, err
-//     }
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		collector := metrics.Get()
+		collector.StartRequest()
 
-//     if err = tc.SetKeepAlivePeriod(ln.keepAlivePeriod); err != nil {
-//         tc.Close()
-//         return nil, err
-//     }
+		rw := &responseWriter{ResponseWriter: w}
+		
+		next.ServeHTTP(rw, r)
 
-//     if err = tc.SetNoDelay(true); err != nil {
-//         tc.Close()
-//         return nil, err
-//     }
-
-//     // Set buffer sizes optimally
-//     if err = tc.SetReadBuffer(64 * 1024); err != nil {
-//         tc.Close()
-//         return nil, err
-//     }
-
-//     if err = tc.SetWriteBuffer(64 * 1024); err != nil {
-//         tc.Close()
-//         return nil, err
-//     }
-
-//     return tc, nil
-// }
+		collector.EndRequest(time.Since(start), uint64(rw.size))
+	})
+}

@@ -254,7 +254,9 @@ func (c *Cache) rebalanceShards(newCount int32) {
 
     // Redistribute entries
     for _, entry := range allEntries {
-        idx := int32(fnv.New64a().Sum64() % uint64(newCount))
+        h := fnv.New64a()
+        h.Write([]byte(entry.Key))
+        idx := int32(h.Sum64() % uint64(newCount))
         shard := c.shards[idx]
         shard.lock.Lock()
         shard.items.Set(entry)

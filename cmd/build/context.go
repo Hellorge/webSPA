@@ -29,7 +29,7 @@ type BuildContext struct {
 	bufferPool  *BufferPool
 	workerpool  *WorkerPool
 	minifier       *MinificationWorker
-	templateEngine *templates.TemplateEngine
+	templateEngine templates.TemplateEngine
 	errors         *ErrorCollector
 	aliasMap    map[string]string
 	usedAliases map[string]string
@@ -77,7 +77,8 @@ func (ctx *BuildContext) initialize() error {
 	fm := filemanager.New(fa, nil, nil, filemanager.Config{
 		RootDir: ctx.config.Directories.Web,
 	})
-	ctx.templateEngine = templates.New(fm, ctx.config.Directories.Templates, ctx.config.Templates.Main, true) // Always production mode for builder
+	templateDir := filepath.Join(ctx.config.Directories.Web, ctx.config.Directories.Templates)
+	ctx.templateEngine = templates.New(fm, templateDir, ctx.config.Templates.Main, true) // Always production mode for builder
 
 	if ctx.dryRun {
 		log.Println("DRY RUN - no files will be written")
@@ -180,20 +181,23 @@ func (ctx *BuildContext) saveAllCaches() error {
 }
 
 func (ctx *BuildContext) getAliasedPath(path string) string {
-	if path == "." || path == "" {
+	if path == "." || path == "" || path == "/" {
 		return path
 	}
 
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 
-	// Use the alias if it exists, otherwise use the original name
+	// Use the alias if it exists
 	if alias, exists := ctx.aliasMap[path]; exists {
+		if alias == "/" {
+			return ctx.getAliasedPath(dir)
+		}
 		base = alias
 	}
 
 	parentPath := ctx.getAliasedPath(dir)
-	if parentPath == "." {
+	if parentPath == "." || parentPath == "/" || parentPath == "" {
 		return base
 	}
 
@@ -318,13 +322,49 @@ func (ctx *BuildContext) shouldProcess(relPath string, info os.FileInfo) bool {
 
 func (ctx *BuildContext) buildRouterBinary() error {
 	root := &router.RadixNode{
-		Children: make([]*router.RadixNode, 0, 16),
+		Children: make(map[string]*router.RadixNode),
 	}
 
 	cacheEntries := ctx.cache.GetAll()
-	for path, entry := range cacheEntries {
-		segments := strings.Split(strings.Trim(path, "/"), "/")
-		root.Insert(segments, &entry.FileInfo)
+	for cacheKey, entry := range cacheEntries {
+		// 1. Determine key to use (AliasedPath or raw cache key/RelPath)
+		routePath := entry.FileInfo.AliasedPath
+		if routePath == "" {
+			routePath = cacheKey
+		}
+
+		trimmedAlias := strings.Trim(routePath, "/")
+		var aliasSegments []string
+		if trimmedAlias != "" {
+			aliasSegments = strings.Split(trimmedAlias, "/")
+		}
+		root.Insert(aliasSegments, &entry.FileInfo)
+
+		// 2. Special case: if it's content.html, also map the directory itself
+		// This logic needs to be mindful of what 'routePath' is now.
+		// If routePath is "/large", it ends in "large".
+		// If routePath IS "content/large/content.html", it ends in "content.html".
+		
+		if strings.HasSuffix(trimmedAlias, "content.html") {
+			dirPath := strings.TrimSuffix(trimmedAlias, "content.html")
+			dirPath = strings.TrimSuffix(dirPath, "/")
+			var dirSegments []string
+			if dirPath != "" {
+				dirSegments = strings.Split(dirPath, "/")
+			}
+			root.Insert(dirSegments, &entry.FileInfo)
+		}
+
+		// 3. Insert original logical path (internal reference)
+		// Only if it differs from the primary route we just inserted
+		trimmedRel := strings.Trim(entry.RelPath, "/")
+		if trimmedRel != trimmedAlias { 
+			var relSegments []string
+			if trimmedRel != "" {
+				relSegments = strings.Split(trimmedRel, "/")
+			}
+			root.Insert(relSegments, &entry.FileInfo)
+		}
 	}
 
 	// Create meta directory if needed

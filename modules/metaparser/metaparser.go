@@ -7,6 +7,7 @@ import (
 )
 
 type MetaData struct {
+    Alias        string                 `toml:"alias"`
     Template     string                 `toml:"template"`
     InlineStyle  bool                   `toml:"inlineStyle"`
     InlineScript bool                   `toml:"inlineScript"`

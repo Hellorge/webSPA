@@ -3,6 +3,7 @@ package coalescer
 import (
 	"hash/fnv"
 	"sync"
+	"gogogo/modules/metrics"
 )
 
 const shardCount = 32 // Balance between memory usage and lock contention
@@ -46,6 +47,7 @@ func (c *Coalescer) Do(key string, fn func() ([]byte, error)) ([]byte, error) {
     shard.RLock()
     if call, ok := shard.calls[key]; ok {
         shard.RUnlock()
+		metrics.Get().IncCoalesced()
         call.wg.Wait()
         return call.val, call.err
     }
@@ -55,6 +57,7 @@ func (c *Coalescer) Do(key string, fn func() ([]byte, error)) ([]byte, error) {
     shard.Lock()
     if call, ok := shard.calls[key]; ok {
         shard.Unlock()
+		metrics.Get().IncCoalesced()
         call.wg.Wait()
         return call.val, call.err
     }

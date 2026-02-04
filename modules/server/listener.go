@@ -19,9 +19,22 @@ type tcpKeepAliveListener struct {
 	keepAlivePeriod time.Duration
 }
 
-func enableTCPFastOpen(fd int) error {
-	// Enable TCP Fast Open on listener
-	return syscall.SetsockoptInt(fd, syscall.IPPROTO_TCP, tcpFastOpen, tcpFastOpenQlen)
+func EnableFastOpen(ln net.Listener) {
+	tl, ok := ln.(*net.TCPListener)
+	if !ok {
+		return
+	}
+
+	f, err := tl.File()
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	fd := int(f.Fd())
+	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_TCP, tcpFastOpen, tcpFastOpenQlen); err != nil {
+		log.Printf("TCP Fast Open enable failed: %v", err)
+	}
 }
 
 func (ln *tcpKeepAliveListener) Accept() (net.Conn, error) {
@@ -30,41 +43,13 @@ func (ln *tcpKeepAliveListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	// Get underlying file descriptor
-	file, err := tc.File()
-	if err != nil {
-		tc.Close()
-		return nil, err
-	}
-	fd := int(file.Fd())
-	file.Close()
+	tc.SetKeepAlive(true)
+	tc.SetKeepAlivePeriod(ln.keepAlivePeriod)
+	tc.SetNoDelay(true)
 
-	// Enable TCP Fast Open
-	if err := enableTCPFastOpen(fd); err != nil {
-		// Log error but don't fail - TFO is an optimization
-		log.Printf("TCP Fast Open enable failed: %v", err)
-	}
-
-	if err := tc.SetKeepAlive(true); err != nil {
-		tc.Close()
-		return nil, err
-	}
-
-	if err := tc.SetKeepAlivePeriod(ln.keepAlivePeriod); err != nil {
-		tc.Close()
-		return nil, err
-	}
-
-	// Optimize buffer sizes
-	if err := tc.SetReadBuffer(64 * 1024); err != nil {
-		tc.Close()
-		return nil, err
-	}
-
-	if err := tc.SetWriteBuffer(64 * 1024); err != nil {
-		tc.Close()
-		return nil, err
-	}
+	// Divine Speed: Optimal buffer sizes
+	tc.SetReadBuffer(64 * 1024)
+	tc.SetWriteBuffer(64 * 1024)
 
 	return tc, nil
 }

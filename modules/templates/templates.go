@@ -1,10 +1,12 @@
 package templates
 
 import (
-	"fmt"
 	"html/template"
 	"io"
+	"net/http"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"gogogo/modules/filemanager"
@@ -21,85 +23,158 @@ type RenderData struct {
 	IsSPAMode bool
 }
 
-type TemplateEngine struct {
-	templates      map[string]*template.Template
-	templateMutex  sync.RWMutex
-	fm             *filemanager.FileManager
-	dir            string
-	defaultLayout string
-	GetTemplate    func(string) (*template.Template, error)
+type TemplateEngine interface {
+	Render(w io.Writer, name string, data RenderData) error
 }
 
-func New(fm *filemanager.FileManager, dir string, defaultLayout string, productionMode bool) *TemplateEngine {
-	t := &TemplateEngine{
-		templates:     make(map[string]*template.Template),
+type ProductionEngine struct {
+	chunks        map[string][]TemplateChunk
+	defaultLayout string
+}
+
+type DevelopmentEngine struct {
+	fm            *filemanager.FileManager
+	dir           string
+	defaultLayout string
+	templates     map[string]*template.Template
+	mu            sync.RWMutex
+}
+
+type TemplateChunk struct {
+	Data    []byte
+	IsVar   bool
+	VarName string
+}
+
+func New(fm *filemanager.FileManager, dir string, defaultLayout string, productionMode bool) TemplateEngine {
+	if productionMode {
+		chunks := make(map[string][]TemplateChunk)
+		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() && filepath.Ext(path) == ".html" {
+				rel, _ := filepath.Rel(dir, path)
+				name := rel
+				// Build-time alignment: standardize name
+				if filepath.Base(rel) == "index.html" {
+					name = filepath.Dir(rel)
+				}
+				content, _ := os.ReadFile(path)
+				chunks[name] = parseFast(string(content))
+			}
+			return nil
+		})
+		return &ProductionEngine{
+			chunks:        chunks,
+			defaultLayout: defaultLayout,
+		}
+	}
+
+	return &DevelopmentEngine{
 		fm:            fm,
 		dir:           dir,
 		defaultLayout: defaultLayout,
+		templates:     make(map[string]*template.Template),
 	}
-
-	if productionMode {
-		t.GetTemplate = t.getProduction
-	} else {
-		t.GetTemplate = t.getDevelopment
-	}
-
-	return t
 }
 
-func (t *TemplateEngine) getProduction(name string) (*template.Template, error) {
-	t.templateMutex.RLock()
-	tmpl, exists := t.templates[name]
-	t.templateMutex.RUnlock()
-	if exists {
-		return tmpl, nil
-	}
 
-	t.templateMutex.Lock()
-	defer t.templateMutex.Unlock()
-	if tmpl, exists = t.templates[name]; exists {
-		return tmpl, nil
-	}
-
+func (e *ProductionEngine) Render(w io.Writer, name string, data RenderData) error {
 	if name == "" {
-		name = t.defaultLayout
+		name = e.defaultLayout
+	}
+	chunks := e.chunks[name]
+	
+	if flusher, ok := w.(http.Flusher); ok {
+		for _, chunk := range chunks {
+			if chunk.IsVar {
+				renderVar(w, chunk.VarName, data)
+			} else {
+				w.Write(chunk.Data)
+			}
+			flusher.Flush()
+		}
+		return nil
 	}
 
-	// Slow path - load and parse template
-	path := filepath.Join(t.dir, name, "index.html")
-	content, err := t.fm.GetContent(path)
-	if err != nil {
-		return nil, fmt.Errorf("error reading template file: %w", err)
+	for _, chunk := range chunks {
+		if chunk.IsVar {
+			renderVar(w, chunk.VarName, data)
+		} else {
+			w.Write(chunk.Data)
+		}
 	}
-
-	tmpl, err = template.New(filepath.Base(name)).Parse(string(content))
-	if err != nil {
-		return nil, fmt.Errorf("error parsing template: %w", err)
-	}
-
-	// Store in sync.Map (handles race conditions internally)
-	t.templates[name] = tmpl
-
-	return tmpl, nil
+	return nil
 }
 
-func (t *TemplateEngine) getDevelopment(name string) (*template.Template, error) {
+func (e *DevelopmentEngine) Render(w io.Writer, name string, data RenderData) error {
 	if name == "" {
-		name = t.defaultLayout
-	}
-	path := filepath.Join(t.dir, name, "index.html")
-	content, err := t.fm.GetContent(path)
-	if err != nil {
-		return nil, fmt.Errorf("error reading template file %s: %w", path, err)
+		name = e.defaultLayout
 	}
 
-	return template.New(filepath.Base(name)).Parse(string(content))
-}
+	e.mu.RLock()
+	tmpl, ok := e.templates[name]
+	e.mu.RUnlock()
 
-func (t *TemplateEngine) Render(w io.Writer, name string, data RenderData) error {
-	tmpl, err := t.GetTemplate(name)
-	if err != nil {
-		return err
+	if !ok {
+		e.mu.Lock()
+		path := filepath.Join(e.dir, name, "index.html")
+		content, _ := e.fm.GetContent(path)
+		tmpl, _ = template.New(name).Parse(string(content))
+		e.templates[name] = tmpl
+		e.mu.Unlock()
 	}
+
 	return tmpl.Execute(w, data)
+}
+
+func renderVar(w io.Writer, name string, data RenderData) {
+	switch name {
+	case "Content":
+		w.Write([]byte(data.Content))
+	case "Style":
+		w.Write([]byte(data.Style))
+	case "Script":
+		w.Write([]byte(data.Script))
+	case "StyleURL":
+		w.Write([]byte(data.StyleURL))
+	case "ScriptURL":
+		w.Write([]byte(data.ScriptURL))
+	case "IsSPAMode":
+		if data.IsSPAMode {
+			w.Write([]byte("true"))
+		} else {
+			w.Write([]byte("false"))
+		}
+	}
+}
+
+
+var varRegex = regexp.MustCompile(`\{\{\s*\.([a-zA-Z0-9]+)\s*\}\}`)
+
+func parseFast(content string) []TemplateChunk {
+	var chunks []TemplateChunk
+	matches := varRegex.FindAllStringSubmatchIndex(content, -1)
+
+	lastEnd := 0
+	for _, match := range matches {
+		if match[0] > lastEnd {
+			chunks = append(chunks, TemplateChunk{
+				Data: []byte(content[lastEnd:match[0]]),
+			})
+		}
+
+		varName := content[match[2]:match[3]]
+		chunks = append(chunks, TemplateChunk{
+			IsVar:   true,
+			VarName: varName,
+		})
+
+		lastEnd = match[1]
+	}
+
+	if lastEnd < len(content) {
+		chunks = append(chunks, TemplateChunk{
+			Data: []byte(content[lastEnd:]),
+		})
+	}
+	return chunks
 }

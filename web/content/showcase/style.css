@@ -1,0 +1,260 @@
+.draughtsman-cinema {
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 80px;
+    position: relative;
+    z-index: 10;
+}
+
+.blueprint-meta,
+.blueprint-footer-v3 {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    letter-spacing: 0.3em;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    opacity: 0.7;
+}
+
+.blueprint-footer-v3 {
+    border-bottom: none;
+    border-top: 1px solid var(--border);
+    padding-top: 30px;
+}
+
+.drawing-stage {
+    display: grid;
+    grid-template-columns: 1fr 1.8fr;
+    gap: 100px;
+    align-items: center;
+}
+
+/* Legend Side */
+.st-glitch {
+    font-size: 6rem;
+    line-height: 0.8;
+    font-weight: 900;
+    margin-bottom: 60px;
+    color: var(--text);
+    position: relative;
+}
+
+.feature-grid-v3 {
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+}
+
+.f-item-v3 {
+    display: flex;
+    gap: 25px;
+    align-items: center;
+    opacity: 0;
+    animation: revealIn 1s cubic-bezier(0.2, 1, 0.2, 1) forwards;
+    animation-delay: calc(var(--i) * 0.2s);
+}
+
+@keyframes revealIn {
+    from {
+        opacity: 0;
+        transform: translateX(-30px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.v3-icon {
+    width: 50px;
+    height: 50px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    background: rgba(212, 175, 55, 0.05);
+    flex-shrink: 0;
+}
+
+.v3-icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+.v3-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.v3-k {
+    font-weight: 800;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    color: var(--text);
+}
+
+.v3-v {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+/* Machine Area */
+.visual-side-v3 {
+    position: relative;
+    height: 700px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.machine-container {
+    position: relative;
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle at center, rgba(18, 18, 18, 0.5) 0%, transparent 70%);
+}
+
+.character-mandala-v3 {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.m-ring-v3 {
+    position: absolute;
+    width: 0;
+    height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: rotateMachine linear infinite;
+}
+
+.m-ring-v3 span {
+    position: absolute;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--accent);
+    opacity: 0.2;
+    white-space: nowrap;
+    text-shadow: 0 0 10px var(--accent-glow);
+}
+
+@keyframes rotateMachine {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Warp Field */
+.warp-field {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.warp-star-v3 {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 1px;
+    height: 1px;
+    background: #fff;
+    border-radius: 50%;
+    opacity: 0;
+    animation: warpTravel linear infinite;
+}
+
+@keyframes warpTravel {
+    0% {
+        transform: translate(0, 0) scale(0);
+        opacity: 0;
+    }
+
+    50% {
+        opacity: 0.8;
+    }
+
+    100% {
+        transform: translate(var(--tx), var(--ty)) scale(3);
+        opacity: 0;
+    }
+}
+
+/* Engine Heart */
+.engine-heart {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 100px;
+    height: 100px;
+    background: #0c0c0c;
+    border: 1px solid var(--accent);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 40px var(--accent-glow);
+    z-index: 20;
+}
+
+.heart-pulse {
+    position: absolute;
+    inset: -10px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    opacity: 0;
+    animation: pulseHeart 3s infinite;
+}
+
+@keyframes pulseHeart {
+    0% {
+        transform: scale(0.8);
+        opacity: 0.5;
+    }
+
+    100% {
+        transform: scale(1.5);
+        opacity: 0;
+    }
+}
+
+.heart-text {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 900;
+    font-size: 1.5rem;
+    color: var(--accent);
+}
+
+/* Background Gritty Overlays */
+.visual-side-v3::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 30px 30px;
+    opacity: 0.3;
+    pointer-events: none;
+}

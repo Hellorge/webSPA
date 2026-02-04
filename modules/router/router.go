@@ -3,32 +3,31 @@ package router
 import (
 	"encoding/gob"
 	"os"
-	"sync"
 	"time"
 )
 
 type Router struct {
-	root    *RadixNode
-	rwMutex sync.RWMutex
+	Root *RadixNode
 }
 
 type FileInfo struct {
 	ModTime     time.Time `json:"ModTime"`
 	DistPath    string    `json:"DistPath"`
 	DependsOn   []string  `json:"DependsOn"`
-	AliasedPath string    `json:"AliasedPath"`
+	AliasedPath  string    `json:"AliasedPath"`
+	BrotliPath   string    `json:"BrotliPath"`
+	EmbeddedData []byte    `json:"EmbeddedData"` // For nanosecond lookup of small assets
 }
 
 type RadixNode struct {
-	Path     string
-	Children []*RadixNode
+	Children map[string]*RadixNode
 	FileInfo *FileInfo
 }
 
 func New() *Router {
 	return &Router{
-		root: &RadixNode{
-			Children: make([]*RadixNode, 0, 8),
+		Root: &RadixNode{
+			Children: make(map[string]*RadixNode),
 		},
 	}
 }
@@ -47,49 +46,43 @@ func LoadFromBinary(binPath string) (*Router, error) {
 	}
 
 	return &Router{
-		root: root,
+		Root: root,
 	}, nil
 }
 
-// Route finds the dist path for a given request path
 func (r *Router) Route(path string) (string, bool) {
-	r.rwMutex.RLock()
 	fileInfo := r.findRoute(path)
-	r.rwMutex.RUnlock()
-
 	if fileInfo == nil {
 		return "", false
 	}
-
 	return fileInfo.DistPath, true
 }
 
+func (r *Router) RouteWithBrotli(path string) (string, string, []byte, bool) {
+	fileInfo := r.findRoute(path)
+	if fileInfo == nil {
+		return "", "", nil, false
+	}
+	return fileInfo.DistPath, fileInfo.BrotliPath, fileInfo.EmbeddedData, true
+}
+
 func (r *Router) findRoute(path string) *FileInfo {
-	node := r.root
+	node := r.Root
+	// Optimization: empty path or just "/"
 	if len(path) <= 1 {
 		return node.FileInfo
 	}
 
-	var start, end int
-	for end <= len(path) {
+	start := 1
+	for end := 1; end <= len(path); end++ {
 		if end == len(path) || path[end] == '/' {
-			if end > start {
-				segment := path[start:end]
-				found := false
-				for _, child := range node.Children {
-					if child.Path == segment {
-						node = child
-						found = true
-						break
-					}
-				}
-				if !found {
-					return nil
-				}
+			child := node.Children[path[start:end]]
+			if child == nil {
+				return nil
 			}
+			node = child
 			start = end + 1
 		}
-		end++
 	}
 
 	return node.FileInfo
@@ -98,28 +91,21 @@ func (r *Router) findRoute(path string) *FileInfo {
 func (n *RadixNode) Insert(segments []string, fileInfo *FileInfo) {
 	current := n
 
-	// Pre-allocate children slice with a reasonable capacity
-	if len(current.Children) == 0 {
-		current.Children = make([]*RadixNode, 0, 8)
+	// Initialize children map if nil
+	if current.Children == nil {
+		current.Children = make(map[string]*RadixNode)
 	}
 
 	for i, segment := range segments {
-		// Try to find an existing child with matching segment
-		var matchingChild *RadixNode
-		for _, child := range current.Children {
-			if child.Path == segment {
-				matchingChild = child
-				break
-			}
-		}
+		// O(1) map lookup
+		matchingChild, found := current.Children[segment]
 
 		// Create new node if no match found
-		if matchingChild == nil {
+		if !found {
 			matchingChild = &RadixNode{
-				Path:     segment,
-				Children: make([]*RadixNode, 0, 4), // Small initial capacity for leaf nodes
+				Children: make(map[string]*RadixNode),
 			}
-			current.Children = append(current.Children, matchingChild)
+			current.Children[segment] = matchingChild
 		}
 
 		// Move to next node

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"gogogo/modules/metrics"
+	"gogogo/modules/profiler"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/gizak/termui/v3"
@@ -35,37 +38,51 @@ func NewMetricsUI() *MetricsUI {
 func (m *MetricsUI) setupUI() {
 	termui.Clear()
 
-	m.cpuChart.Title = "CPU Usage"
-	m.cpuChart.LineColors = []termui.Color{termui.ColorGreen}
+	m.cpuChart.Title = "LATENCY VELOCITY (ms)"
+	m.cpuChart.LineColors = []termui.Color{termui.ColorYellow}
+	m.cpuChart.TitleStyle.Fg = termui.ColorYellow
+	m.cpuChart.BorderStyle.Fg = termui.ColorYellow
 	m.cpuChart.AxesColor = termui.ColorWhite
-	m.cpuChart.Data = make([][]float64, 1)
-
-	m.memChart.Title = "Memory Usage"
+	m.cpuChart.Data = [][]float64{{0}}
+	
+	m.memChart.Title = "CORE THROUGHPUT (MiB/s)"
 	m.memChart.LineColors = []termui.Color{termui.ColorYellow}
+	m.memChart.TitleStyle.Fg = termui.ColorYellow
+	m.memChart.BorderStyle.Fg = termui.ColorYellow
 	m.memChart.AxesColor = termui.ColorWhite
-	m.memChart.Data = make([][]float64, 1)
+	m.memChart.Data = [][]float64{{0}}
 
-	m.reqChart.Title = "Request Rate"
-	m.reqChart.LineColors = []termui.Color{termui.ColorCyan}
+	m.reqChart.Title = "ARCHITECTURAL PRESSURE (Total)"
+	m.reqChart.LineColors = []termui.Color{termui.ColorYellow}
+	m.reqChart.TitleStyle.Fg = termui.ColorYellow
+	m.reqChart.BorderStyle.Fg = termui.ColorYellow
 	m.reqChart.AxesColor = termui.ColorWhite
-	m.reqChart.Data = make([][]float64, 1)
+	m.reqChart.Data = [][]float64{{0}}
 
 	for i := range m.gauges {
 		m.gauges[i] = widgets.NewGauge()
-		m.gauges[i].BarColor = termui.ColorBlue
+		m.gauges[i].BarColor = termui.ColorYellow
+		m.gauges[i].TitleStyle.Fg = termui.ColorYellow
+		m.gauges[i].BorderStyle.Fg = termui.ColorYellow
 	}
-	m.gauges[0].Title = "Cache Hit Rate"
-	m.gauges[1].Title = "Memory Usage"
-	m.gauges[2].Title = "Active Goroutines"
+	m.gauges[0].Title = "VELOCITY RATIO"
+	m.gauges[1].Title = "CORE SATURATION"
+	m.gauges[2].Title = "SCHEMATIC LOAD"
 
-	m.requestList.Title = "Recent Requests"
+	m.requestList.Title = "TRANSACTION LOG"
+	m.requestList.TitleStyle.Fg = termui.ColorYellow
+	m.requestList.BorderStyle.Fg = termui.ColorYellow
 	m.requestList.TextStyle = termui.NewStyle(termui.ColorWhite)
 	m.requestList.WrapText = false
 
-	m.summaryText.Title = "Summary"
+	m.summaryText.Title = "ENGINE SPECIFICATIONS"
+	m.summaryText.TitleStyle.Fg = termui.ColorYellow
+	m.summaryText.BorderStyle.Fg = termui.ColorYellow
 	m.summaryText.TextStyle = termui.NewStyle(termui.ColorWhite)
 
-	m.profilerStats.Title = "Profiler Stats"
+	m.profilerStats.Title = "MACHINE SYSTEM STATE"
+	m.profilerStats.TitleStyle.Fg = termui.ColorYellow
+	m.profilerStats.BorderStyle.Fg = termui.ColorYellow
 	m.profilerStats.TextStyle = termui.NewStyle(termui.ColorWhite)
 
 	m.layoutUI()
@@ -99,13 +116,24 @@ func (m *MetricsUI) layoutUI() {
 	m.profilerStats.SetRect(0, termHeight-profilerStatsHeight, termWidth, termHeight)
 }
 
-func (m *MetricsUI) updateCharts() {
-	matr := metrics.GetMetrics()
-	serverMetrics := matr.GetServerMetrics()
+func (m *MetricsUI) fetchSnapshot() (*metrics.Snapshot, error) {
+	resp, err := http.Get("http://localhost:8080/api/metrics")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	cpuUsage := float64(serverMetrics.ActiveGoroutines) / 100.0 // This is a placeholder. You might want to implement actual CPU usage tracking.
-	memUsage := float64(serverMetrics.MemoryUsage) / (1024 * 1024)
-	reqRate := float64(serverMetrics.TotalRequests) // This should be requests per second. You might want to implement a rolling average.
+	var snapshot metrics.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
+}
+
+func (m *MetricsUI) updateCharts(snapshot *metrics.Snapshot) {
+	cpuUsage := snapshot.AvgLatency.Seconds() * 1000 // ms
+	memUsage := float64(snapshot.TotalBytes) / (1024 * 1024)
+	reqRate := snapshot.Throughput // MiB/s
 
 	if len(m.cpuChart.Data[0]) >= 100 {
 		m.cpuChart.Data[0] = m.cpuChart.Data[0][1:]
@@ -123,38 +151,35 @@ func (m *MetricsUI) updateCharts() {
 	m.reqChart.Data[0] = append(m.reqChart.Data[0], reqRate)
 }
 
-func (m *MetricsUI) updateGauges() {
-	matr := metrics.GetMetrics()
-	serverMetrics := matr.GetServerMetrics()
+func (m *MetricsUI) updateGauges(snapshot *metrics.Snapshot) {
+	// Percentages based on arbitrary limits for visualization
+	m.gauges[0].Percent = int(snapshot.Throughput)               // Throughput as % of 100 MiB/s
+	if m.gauges[0].Percent > 100 { m.gauges[0].Percent = 100 }
+	
+	m.gauges[1].Percent = int(snapshot.ActiveRequests)           // Active requests
+	if m.gauges[1].Percent > 100 { m.gauges[1].Percent = 100 }
 
-	m.gauges[0].Percent = int(float64(serverMetrics.CacheHitRate) / 1e4)                         // Convert from 1e6 fixed-point to percentage
-	m.gauges[1].Percent = int((float64(serverMetrics.MemoryUsage) / (1024 * 1024 * 1024)) * 100) // Assuming 1GB max
-	m.gauges[2].Percent = int((float64(serverMetrics.ActiveGoroutines) / 1000) * 100)            // Assuming 1000 max
+	m.gauges[2].Percent = int(snapshot.AvgLatency.Seconds() * 100) // 1s = 100%
+	if m.gauges[2].Percent > 100 { m.gauges[2].Percent = 100 }
 }
 
-func (m *MetricsUI) updateRequestList() {
-	matr := metrics.GetMetrics()
-	requestMetrics := matr.GetRequestMetrics()
-
-	items := make([]string, 0, len(requestMetrics))
-	for _, req := range requestMetrics {
-		if req.URL != "" { // Only add non-empty entries
-			items = append(items, fmt.Sprintf("%s - %dms - %d", req.URL, req.ResponseTime.Milliseconds(), req.StatusCode))
-		}
+func (m *MetricsUI) updateRequestList(snapshot *metrics.Snapshot) {
+	m.requestList.Rows = []string{
+		fmt.Sprintf("Total Requests: %d", snapshot.TotalRequests),
+		fmt.Sprintf("Active Requests: %d", snapshot.ActiveRequests),
+		fmt.Sprintf("Total Bytes:    %d", snapshot.TotalBytes),
+		fmt.Sprintf("Avg Latency:    %v", snapshot.AvgLatency),
+		fmt.Sprintf("Throughput:     %.2f MiB/s", snapshot.Throughput),
 	}
-	m.requestList.Rows = items
 }
 
-func (m *MetricsUI) updateSummary() {
-	matr := metrics.GetMetrics()
-	serverMetrics := matr.GetServerMetrics()
-
+func (m *MetricsUI) updateSummary(snapshot *metrics.Snapshot) {
 	m.summaryText.Text = fmt.Sprintf(
-		"Total Requests: %d\nAverage Response Time: %.2fms\nCache Size: %d\nMemory Usage: %.2f MB",
-		serverMetrics.TotalRequests,
-		float64(serverMetrics.AverageResponse)/float64(time.Millisecond),
-		serverMetrics.CacheSize,
-		float64(serverMetrics.MemoryUsage)/(1024*1024),
+		"ADDR: localhost:8080 | UPTIME: %v\nREQUESTS: %d | ACTIVE_THREADS: %d | FLOW: %.2f MiB/s",
+		snapshot.Uptime.Round(time.Second),
+		snapshot.TotalRequests,
+		snapshot.ActiveRequests,
+		snapshot.Throughput,
 	)
 }
 
@@ -178,10 +203,15 @@ func (m *MetricsUI) Run(profiler *profiler.Profiler) error {
 	m.setupUI()
 
 	updateUI := func() {
-		m.updateCharts()
-		m.updateGauges()
-		m.updateRequestList()
-		m.updateSummary()
+		snapshot, err := m.fetchSnapshot()
+		if err == nil {
+			m.updateCharts(snapshot)
+			m.updateGauges(snapshot)
+			m.updateRequestList(snapshot)
+			m.updateSummary(snapshot)
+		} else {
+			m.summaryText.Text = fmt.Sprintf("Error fetching metrics: %v\nIs the server running?", err)
+		}
 		m.updateProfilerStats(profiler.GetStats())
 	}
 
@@ -210,15 +240,16 @@ func (m *MetricsUI) Run(profiler *profiler.Profiler) error {
 }
 
 func main() {
-	profiler := profiler.NewProfiler()
-	err := profiler.Start("../meta/cpu.prof", "../meta/mem.prof")
+	prof := profiler.New()
+	err := prof.Start("/tmp/stats_cpu.prof", "/tmp/stats_mem.prof")
 	if err != nil {
-		log.Fatalf("Failed to start profiler: %v", err)
+		log.Printf("Failed to start profiler: %v", err)
+	} else {
+		defer prof.Stop()
 	}
-	defer profiler.Stop()
 
 	ui := NewMetricsUI()
-	if err := ui.Run(profiler); err != nil {
+	if err := ui.Run(prof); err != nil {
 		log.Fatalf("Error running ui: %v", err)
 	}
 }

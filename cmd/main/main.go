@@ -58,10 +58,11 @@ func main() {
 		Router:  r,
 	})
 
-	templateEngine := templates.New(fm, cfg.Directories.Templates, cfg.Templates.Main, cfg.Server.ProductionMode)
+	templateDir := filepath.Join(cfg.Directories.Web, cfg.Directories.Templates)
+	templateEngine := templates.New(fm, templateDir, cfg.Templates.Main, cfg.Server.ProductionMode)
 
 	// Initialize all handlers
-	webHandler := handlers.NewWebHandler(fm, templateEngine, cfg.Directories.Content, cfg.Server.SPAMode)
+	webHandler := handlers.NewWebHandler(fm, templateEngine, cfg.Directories.Content, cfg.Server.SPAMode, cfg.Server.ProductionMode)
 	staticHandler := handlers.NewStaticHandler(fm)
 	apiHandler := handlers.NewAPIHandler(fm, cfg.Directories.Content)
 

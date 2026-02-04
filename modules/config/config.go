@@ -69,7 +69,6 @@ type Config struct {
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
 
-	toml.DecodeFile(path, &cfg)
-
-	return cfg, nil
+	_, err := toml.DecodeFile(path, &cfg)
+	return cfg, err
 }

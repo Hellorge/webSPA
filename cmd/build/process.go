@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/andybalholm/brotli"
 	"github.com/evanw/esbuild/pkg/api"
 )
 
@@ -43,7 +44,7 @@ func (w *Worker) processFile(item WorkItem) (ProcessResult, error) {
 	hash := md5.Sum(content)
 	hashString := hex.EncodeToString(hash[:])
 
-	if entry, ok := w.ctx.cache.Get(item.RelPath); ok && entry.Hash == hashString {
+	if entry, ok := w.ctx.cache.Get(item.RelPath); ok && entry.Hash == hashString && !w.ctx.force {
 		return ProcessResult{
 			FileInfo: router.FileInfo{
 				ModTime:   item.Info.ModTime(),
@@ -108,12 +109,27 @@ func (w *Worker) processFile(item WorkItem) (ProcessResult, error) {
 		return ProcessResult{}, fmt.Errorf("error writing file: %w", err)
 	}
 
+	// Pre-compress with Brotli
+	brPath := outPath + ".br"
+	if err := compressBrotli(minified, brPath); err != nil {
+		return ProcessResult{}, fmt.Errorf("error compressing file: %w", err)
+	}
+
+	// Nanosecond Cache: embed small assets directly in the router payload
+	var embeddedData []byte
+	if len(minified) < 4096 {
+		embeddedData = minified
+	}
+
 	deps := findDependencies(content)
 	return ProcessResult{
 		FileInfo: router.FileInfo{
-			ModTime:   item.Info.ModTime(),
-			DistPath:  outPath,
-			DependsOn: deps,
+			ModTime:      item.Info.ModTime(),
+			DistPath:     outPath,
+			BrotliPath:   brPath,
+			EmbeddedData: embeddedData,
+			AliasedPath:  item.AliasedPath,
+			DependsOn:    deps,
 		},
 		Content:      minified,
 		Hash:         hashString,
@@ -246,15 +262,52 @@ func (w *Worker) processContentHTML(item WorkItem, content []byte, hashString st
 		return ProcessResult{}, fmt.Errorf("error writing HTML file: %w", err)
 	}
 
+	// Pre-compress with Brotli
+	brPath := outPath + ".br"
+	if err := compressBrotli(minified, brPath); err != nil {
+		return ProcessResult{}, fmt.Errorf("error compressing HTML: %w", err)
+	}
+
+	// Nanosecond Cache: embed small assets directly in the router payload
+	var embeddedData []byte
+	if len(minified) < 4096 {
+		embeddedData = minified
+	}
+
 	// Regular return for the router
 	return ProcessResult{
 		FileInfo: router.FileInfo{
-			ModTime:   item.Info.ModTime(),
-			DistPath:  outPath,
-			DependsOn: []string{}, // Pre-rendered HTML doesn't need dependencies
+			ModTime:      item.Info.ModTime(),
+			DistPath:     outPath,
+			BrotliPath:   brPath,
+			EmbeddedData: embeddedData,
+			AliasedPath: func() string {
+				if pd.meta.Alias != "" {
+					return pd.meta.Alias
+				}
+				// Fallback to directory name
+				alias := "/" + filepath.ToSlash(pagePath)
+				if !strings.HasPrefix(alias, "/") {
+					alias = "/" + alias
+				}
+				return alias
+			}(),
+			DependsOn:    []string{}, // Pre-rendered HTML doesn't need dependencies
 		},
 		Content:      minified,
 		Hash:         hashString,
 		Dependencies: []string{},
 	}, nil
+}
+
+func compressBrotli(data []byte, outPath string) error {
+	var buf bytes.Buffer
+	writer := brotli.NewWriterLevel(&buf, brotli.BestCompression)
+	if _, err := writer.Write(data); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	return atomicWrite(outPath, buf.Bytes())
 }

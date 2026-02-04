@@ -1,0 +1,10 @@
+alias = "/large"
+template = ""
+inlineStyle = false
+inlineScript = false
+
+head = [
+    '<title>Large Test</title>'
+]
+
+[variables]

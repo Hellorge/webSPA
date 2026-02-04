@@ -4,6 +4,7 @@ go 1.23.0
 
 require (
 	github.com/BurntSushi/toml v1.4.0 // indirect
+	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/evanw/esbuild v0.23.1 // indirect

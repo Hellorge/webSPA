@@ -2,7 +2,7 @@
 [server]
 port = 8080
 host = "localhost"
-production_mode = false
+production_mode = true
 spa_mode = true
 metrics_enabled = true
 caching_enabled = true

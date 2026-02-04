@@ -5,10 +5,12 @@ import (
 	"html/template"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"gogogo/modules/filemanager"
 	"gogogo/modules/metaparser"
+	"gogogo/modules/metrics"
 	"gogogo/modules/templates"
 )
 
@@ -29,14 +31,19 @@ type PageData struct {
 	styleExists  string
 	scriptExists string
 	meta         *metaparser.MetaData
+	encoding     string
 	err          error
 }
 
-type WebHandler struct {
-	fm           *filemanager.FileManager
-	engine       *templates.TemplateEngine
-	contentPath  string
-	SPAMode      bool
+type ProductionWebHandler struct {
+	fm *filemanager.FileManager
+}
+
+type DevelopmentWebHandler struct {
+	fm          *filemanager.FileManager
+	engine      templates.TemplateEngine
+	contentPath string
+	SPAMode     bool
 }
 
 type SPAHandler struct {
@@ -54,8 +61,11 @@ type APIHandler struct {
 	contentPath string
 }
 
-func NewWebHandler(fm *filemanager.FileManager, engine *templates.TemplateEngine, contentPath string, SPAMode bool) *WebHandler {
-	return &WebHandler{
+func NewWebHandler(fm *filemanager.FileManager, engine templates.TemplateEngine, contentPath string, SPAMode bool, productionMode bool) http.Handler {
+	if productionMode {
+		return &ProductionWebHandler{fm: fm}
+	}
+	return &DevelopmentWebHandler{
 		fm:          fm,
 		engine:      engine,
 		contentPath: contentPath,
@@ -82,8 +92,8 @@ func NewAPIHandler(fm *filemanager.FileManager, contentPath string) *APIHandler 
 	}
 }
 
-func loadContent(fm *filemanager.FileManager, dir string, path string) *PageData {
-	// Simple aliasing for dev mode: map "/" to "home"
+func loadContent(fm *filemanager.FileManager, dir string, path string, encoding string) *PageData {
+	// Map root to home
 	if path == "/" || path == "" {
 		path = "home"
 	}
@@ -102,7 +112,7 @@ func loadContent(fm *filemanager.FileManager, dir string, path string) *PageData
 
 	go func() {
 		defer wg.Done()
-		pd.content, pd.err = fm.GetContent(contentPath)
+		pd.content, pd.encoding, pd.err = fm.GetContentEncoded(contentPath, encoding)
 	}()
 
 	go func() {
@@ -139,10 +149,34 @@ func loadContent(fm *filemanager.FileManager, dir string, path string) *PageData
 	return pd
 }
 
-func (h *WebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+func (h *ProductionWebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Balanced: lightweight encoding detection
+	enc := ""
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "br") {
+		enc = "br"
+	}
 
-	pc := loadContent(h.fm, h.contentPath, path)
+	content, encoding, err := h.fm.GetContentEncoded(r.URL.Path, enc)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if encoding != "" {
+		w.Header().Set("Content-Encoding", encoding)
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(content)
+}
+
+func (h *DevelopmentWebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if path == "/" {
+		path = "home"
+	}
+
+	pc := loadContent(h.fm, h.contentPath, path, "")
 	if pc.err != nil {
 		http.NotFound(w, r)
 		return
@@ -170,9 +204,9 @@ func (h *WebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	data := templates.RenderData{
 		Meta:      pc.meta,
-		Content:   template.HTML(pc.content),
-		Style:     template.CSS(pc.style),
-		Script:    template.JS(pc.script),
+		Content:   template.HTML(string(pc.content)),
+		Style:     template.CSS(string(pc.style)),
+		Script:    template.JS(string(pc.script)),
 		StyleURL:  pc.styleExists,
 		ScriptURL: pc.scriptExists,
 		IsSPAMode: h.SPAMode,
@@ -187,11 +221,18 @@ func (h *WebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	pc := loadContent(h.fm, h.contentPath, path)
+	encoding := ""
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "br") {
+		encoding = "br"
+	}
+
+	pc := loadContent(h.fm, h.contentPath, path, encoding)
 	if pc.err != nil {
 		http.NotFound(w, r)
 		return
 	}
+
+	// ... rest of the function ...
 
 	// HTTP/2 Push if available and files exist
 	if pusher, ok := w.(http.Pusher); ok {
@@ -233,6 +274,9 @@ func (h *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	if pc.encoding != "" {
+		w.Header().Set("Content-Encoding", pc.encoding)
+	}
 	encoder := json.NewEncoder(w)
 	encoder.SetEscapeHTML(false)
 	encoder.Encode(resp)
@@ -257,6 +301,13 @@ func (h *StaticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path[5:] // strip /api/
+
+	if path == "metrics" {
+		w.Header().Set("Content-Type", "application/json")
+		encoder := json.NewEncoder(w)
+		encoder.Encode(metrics.Get().GetSnapshot())
+		return
+	}
 
 	content, err := h.fm.GetContent(filepath.Join(h.contentPath, path, contentFile))
 	if err != nil {

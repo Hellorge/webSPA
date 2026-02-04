@@ -16,6 +16,7 @@ type Cache struct {
 type CacheEntry struct {
 	FileInfo router.FileInfo
 	Hash     string
+	RelPath  string
 }
 
 type DependencyGraph struct {

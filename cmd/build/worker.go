@@ -88,6 +88,7 @@ func (w *Worker) process(item WorkItem) error {
 		w.ctx.cache.Set(item.AliasedPath, CacheEntry{
 			FileInfo: result.FileInfo,
 			Hash:     result.Hash,
+			RelPath:  item.RelPath,
 		})
 
 		if len(result.Dependencies) > 0 {
