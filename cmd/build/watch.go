@@ -157,8 +157,8 @@ func (w *Watcher) handleDelete(path string) error {
     }
 
     // Clean up caches
-    if fileInfo, ok := w.ctx.fileCache.Get(relPath); ok {
-        os.Remove(fileInfo.DistPath)
+    if entry, ok := w.ctx.cache.Get(relPath); ok {
+        os.Remove(entry.FileInfo.DistPath)
     }
 
     // Process dependents

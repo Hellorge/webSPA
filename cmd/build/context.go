@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"gogogo/modules/config"
+	"gogogo/modules/filemanager"
 	"gogogo/modules/router"
+	"gogogo/modules/templates"
+	"gogogo/modules/fileaccess"
 
 	"github.com/BurntSushi/toml"
 )
@@ -21,13 +24,13 @@ import (
 type BuildContext struct {
 	config      *config.Config
 	concurrency int
-	fileCache   *FileCache
-	buildCache  *BuildCache
+	cache       *Cache
 	depGraph    *DependencyGraph
 	bufferPool  *BufferPool
 	workerpool  *WorkerPool
-	minifier    *MinificationWorker
-	errors      *ErrorCollector
+	minifier       *MinificationWorker
+	templateEngine *templates.TemplateEngine
+	errors         *ErrorCollector
 	aliasMap    map[string]string
 	usedAliases map[string]string
 	force       bool
@@ -64,11 +67,17 @@ func (ctx *BuildContext) initialize() error {
 
 	ctx.workerpool = NewWorkerPool(ctx.concurrency, ctx)
 	ctx.minifier = NewMinificationWorker()
-	ctx.fileCache = NewFileCache()
-	ctx.buildCache = NewBuildCache()
+	ctx.cache = NewCache()
 	ctx.depGraph = NewDependencyGraph()
 	ctx.bufferPool = NewBufferPool(defaultBufferSize)
 	ctx.errors = NewErrorCollector()
+
+	// Initialize file manager for templates to use
+	fa := fileaccess.New()
+	fm := filemanager.New(fa, nil, nil, filemanager.Config{
+		RootDir: ctx.config.Directories.Web,
+	})
+	ctx.templateEngine = templates.New(fm, ctx.config.Directories.Templates, ctx.config.Templates.Main, true) // Always production mode for builder
 
 	if ctx.dryRun {
 		log.Println("DRY RUN - no files will be written")
@@ -106,21 +115,10 @@ func (ctx *BuildContext) initialize() error {
 		log.Printf("Concurency set to %d", ctx.concurrency)
 	}
 
-	// Load caches concurrently
-	errs := make(chan error, 2)
-	go func() {
-		fileInfoPath = filepath.Join(ctx.config.Directories.Meta, "build_file_info.json")
-		errs <- ctx.fileCache.Load(fileInfoPath)
-	}()
-	go func() {
-		buildCachePath = filepath.Join(ctx.config.Directories.Meta, "build_cache.json")
-		errs <- ctx.buildCache.Load(buildCachePath)
-	}()
-
-	for i := 0; i < 2; i++ {
-		if err := <-errs; err != nil {
-			return fmt.Errorf("failed to load caches: %w", err)
-		}
+	// Load cache
+	buildCachePath = filepath.Join(ctx.config.Directories.Meta, "build_cache.json")
+	if err := ctx.cache.Load(buildCachePath); err != nil {
+		return fmt.Errorf("failed to load cache: %w", err)
 	}
 
 	return nil
@@ -170,7 +168,6 @@ func (ctx *BuildContext) build() error {
 
 	if ctx.stats {
 		ctx.buildStats.EndTime = time.Now()
-		ctx.buildStats.ProcessedFiles = processedFiles
 		ctx.buildStats.AliasedPaths = len(ctx.aliasMap)
 		ctx.printBuildStats()
 	}
@@ -179,20 +176,7 @@ func (ctx *BuildContext) build() error {
 }
 
 func (ctx *BuildContext) saveAllCaches() error {
-	errs := make(chan error, 2)
-	go func() {
-		errs <- ctx.fileCache.Save(fileInfoPath)
-	}()
-	go func() {
-		errs <- ctx.buildCache.Save(buildCachePath)
-	}()
-
-	for i := 0; i < 2; i++ {
-		if err := <-errs; err != nil {
-			return fmt.Errorf("failed to save caches: %w", err)
-		}
-	}
-	return nil
+	return ctx.cache.Save(buildCachePath)
 }
 
 func (ctx *BuildContext) getAliasedPath(path string) string {
@@ -319,12 +303,12 @@ func (ctx *BuildContext) shouldProcess(relPath string, info os.FileInfo) bool {
 		return true
 	}
 
-	fileInfo, exists := ctx.fileCache.Get(relPath)
+	entry, exists := ctx.cache.Get(relPath)
 	if !exists {
 		return true
 	}
 
-	if info.ModTime().After(fileInfo.ModTime) {
+	if info.ModTime().After(entry.FileInfo.ModTime) {
 		return true
 	}
 
@@ -337,10 +321,10 @@ func (ctx *BuildContext) buildRouterBinary() error {
 		Children: make([]*router.RadixNode, 0, 16),
 	}
 
-	fileInfos := ctx.fileCache.GetAll()
-	for path, info := range fileInfos {
+	cacheEntries := ctx.cache.GetAll()
+	for path, entry := range cacheEntries {
 		segments := strings.Split(strings.Trim(path, "/"), "/")
-		root.Insert(segments, &info) // Note: need to make Insert public in RadixNode
+		root.Insert(segments, &entry.FileInfo)
 	}
 
 	// Create meta directory if needed

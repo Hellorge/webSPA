@@ -1,29 +1,21 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"gogogo/modules/router"
 	"os"
 	"sync"
 )
 
-type FileCache struct {
+type Cache struct {
 	mu    sync.RWMutex
-	data  map[string]router.FileInfo
+	data  map[string]CacheEntry
 	dirty bool
 }
 
-type BuildCache struct {
-	mu    sync.RWMutex
-	data  map[string]BuildCacheEntry
-	dirty bool
-}
-
-type BuildCacheEntry struct {
-	Content  []byte
+type CacheEntry struct {
+	FileInfo router.FileInfo
 	Hash     string
-	DistPath string
 }
 
 type DependencyGraph struct {
@@ -31,21 +23,15 @@ type DependencyGraph struct {
 	nodes map[string]map[string]struct{}
 }
 
-func NewFileCache() *FileCache {
-	return &FileCache{
-		data: make(map[string]router.FileInfo, defaultMapSize),
+func NewCache() *Cache {
+	return &Cache{
+		data: make(map[string]CacheEntry, defaultMapSize),
 	}
 }
 
-func NewBuildCache() *BuildCache {
-	return &BuildCache{
-		data: make(map[string]BuildCacheEntry, defaultMapSize),
-	}
-}
-
-func (fc *FileCache) Load(path string) error {
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
+func (c *Cache) Load(path string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -53,113 +39,56 @@ func (fc *FileCache) Load(path string) error {
 	}
 
 	if len(data) > 0 {
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.UseNumber()
-		return decoder.Decode(&fc.data)
+		return json.Unmarshal(data, &c.data)
 	}
 	return nil
 }
 
-func (fc *FileCache) Save(path string) error {
-	fc.mu.RLock()
-	if !fc.dirty {
-		fc.mu.RUnlock()
+func (c *Cache) Save(path string) error {
+	c.mu.RLock()
+	if !c.dirty {
+		c.mu.RUnlock()
 		return nil
 	}
-	fc.mu.RUnlock()
+	c.mu.RUnlock()
 
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	var buf bytes.Buffer
-	buf.Grow(len(fc.data) * 100)
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-
-	if err := encoder.Encode(fc.data); err != nil {
+	data, err := json.Marshal(c.data)
+	if err != nil {
 		return err
 	}
 
-	return atomicWrite(path, buf.Bytes())
+	return atomicWrite(path, data)
 }
 
-func (fc *FileCache) Get(key string) (router.FileInfo, bool) {
-	fc.mu.RLock()
-	defer fc.mu.RUnlock()
-	info, ok := fc.data[key]
-	return info, ok
+func (c *Cache) Get(key string) (CacheEntry, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.data[key]
+	return entry, ok
 }
 
-func (fc *FileCache) Set(key string, info router.FileInfo) {
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
-	fc.data[key] = info
-	fc.dirty = true
+func (c *Cache) Set(key string, entry CacheEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[key] = entry
+	c.dirty = true
 }
 
-func (fc *FileCache) GetAll() map[string]router.FileInfo {
-	fc.mu.RLock()
-	defer fc.mu.RUnlock()
+func (c *Cache) GetAll() map[string]CacheEntry {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-	result := make(map[string]router.FileInfo, len(fc.data))
-	for k, v := range fc.data {
+	result := make(map[string]CacheEntry, len(c.data))
+	for k, v := range c.data {
 		result[k] = v
 	}
 	return result
 }
 
-// BuildCache methods
-func (bc *BuildCache) Load(path string) error {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	if len(data) > 0 {
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		return decoder.Decode(&bc.data)
-	}
-	return nil
-}
-
-func (bc *BuildCache) Save(path string) error {
-	bc.mu.RLock()
-	if !bc.dirty {
-		bc.mu.RUnlock()
-		return nil
-	}
-	bc.mu.RUnlock()
-
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-
-	var buf bytes.Buffer
-	buf.Grow(len(bc.data) * 200)
-	encoder := json.NewEncoder(&buf)
-
-	if err := encoder.Encode(bc.data); err != nil {
-		return err
-	}
-
-	return atomicWrite(path, buf.Bytes())
-}
-
-func (bc *BuildCache) Get(key string) (BuildCacheEntry, bool) {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
-	entry, ok := bc.data[key]
-	return entry, ok
-}
-
-func (bc *BuildCache) Set(key string, entry BuildCacheEntry) {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	bc.data[key] = entry
-	bc.dirty = true
-}
+// BuildCache removed as it's merged into Cache
 
 func NewDependencyGraph() *DependencyGraph {
 	return &DependencyGraph{

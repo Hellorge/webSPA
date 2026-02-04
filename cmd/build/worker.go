@@ -84,12 +84,10 @@ func (w *Worker) process(item WorkItem) error {
 	}
 
 	if !w.ctx.dryRun {
-		// Only write files and update caches in non-dry-run mode
-		w.ctx.fileCache.Set(item.AliasedPath, result.FileInfo)
-		w.ctx.buildCache.Set(item.AliasedPath, BuildCacheEntry{
-			Content:  result.Content,
+		// Only update caches in non-dry-run mode
+		w.ctx.cache.Set(item.AliasedPath, CacheEntry{
+			FileInfo: result.FileInfo,
 			Hash:     result.Hash,
-			DistPath: result.FileInfo.DistPath,
 		})
 
 		if len(result.Dependencies) > 0 {

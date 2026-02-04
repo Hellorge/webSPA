@@ -58,16 +58,10 @@ func main() {
 		Router:  r,
 	})
 
-	templateEngine := templates.New(fm, cfg.Directories.Templates, cfg.Server.ProductionMode)
-
-	// Get main template
-	mainTemplate, err := templateEngine.GetTemplate(filepath.Join(cfg.Templates.Main))
-	if err != nil {
-		log.Fatalf("Failed to load main template: %v", err)
-	}
+	templateEngine := templates.New(fm, cfg.Directories.Templates, cfg.Templates.Main, cfg.Server.ProductionMode)
 
 	// Initialize all handlers
-	webHandler := handlers.NewWebHandler(fm, mainTemplate, cfg.Directories.Content, cfg.Server.SPAMode)
+	webHandler := handlers.NewWebHandler(fm, templateEngine, cfg.Directories.Content, cfg.Server.SPAMode)
 	staticHandler := handlers.NewStaticHandler(fm)
 	apiHandler := handlers.NewAPIHandler(fm, cfg.Directories.Content)
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"gogogo/modules/metaparser"
 	"gogogo/modules/router"
+	"gogogo/modules/templates"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,14 +43,14 @@ func (w *Worker) processFile(item WorkItem) (ProcessResult, error) {
 	hash := md5.Sum(content)
 	hashString := hex.EncodeToString(hash[:])
 
-	if entry, ok := w.ctx.buildCache.Get(item.RelPath); ok && entry.Hash == hashString {
+	if entry, ok := w.ctx.cache.Get(item.RelPath); ok && entry.Hash == hashString {
 		return ProcessResult{
 			FileInfo: router.FileInfo{
 				ModTime:   item.Info.ModTime(),
-				DistPath:  entry.DistPath,
+				DistPath:  entry.FileInfo.DistPath,
 				DependsOn: findDependencies(content),
 			},
-			Content:      entry.Content,
+			Content:      content, // Content is already loaded above
 			Hash:         entry.Hash,
 			Dependencies: findDependencies(content),
 		}, nil
@@ -205,35 +206,8 @@ func (w *Worker) processContentHTML(item WorkItem, content []byte, hashString st
 		pd.scriptExists = fmt.Sprintf("/static/%s/script.js", pagePath)
 	}
 
-	// Load main template
-	templatePath := filepath.Join(
-		w.ctx.config.Directories.Web,
-		w.ctx.config.Directories.Templates,
-		w.ctx.config.Templates.Main,
-		"index.html",
-	)
-
-	templateContent, err := os.ReadFile(templatePath)
-	if err != nil {
-		return ProcessResult{}, fmt.Errorf("error loading template: %w", err)
-	}
-
-	// Parse template
-	tmpl, err := template.New(filepath.Base(templatePath)).Parse(string(templateContent))
-	if err != nil {
-		return ProcessResult{}, fmt.Errorf("error parsing template: %w", err)
-	}
-
-	// Prepare template data struct
-	data := struct {
-		Content   template.HTML
-		Style     template.CSS
-		Script    template.JS
-		StyleURL  string
-		ScriptURL string
-		Meta      *metaparser.MetaData
-		IsSPAMode bool
-	}{
+	// Prepare template data
+	data := templates.RenderData{
 		Content:   template.HTML(pd.content),
 		Style:     template.CSS(pd.style),
 		Script:    template.JS(pd.script),
@@ -243,9 +217,9 @@ func (w *Worker) processContentHTML(item WorkItem, content []byte, hashString st
 		IsSPAMode: false, // Always false for pre-rendered HTML
 	}
 
-	// Execute template
+	// Execute template using unified engine
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := w.ctx.templateEngine.Render(&buf, pd.meta.Template, data); err != nil {
 		return ProcessResult{}, fmt.Errorf("error executing template: %w", err)
 	}
 

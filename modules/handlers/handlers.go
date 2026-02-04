@@ -9,6 +9,7 @@ import (
 
 	"gogogo/modules/filemanager"
 	"gogogo/modules/metaparser"
+	"gogogo/modules/templates"
 )
 
 // Pre-computed paths
@@ -32,10 +33,10 @@ type PageData struct {
 }
 
 type WebHandler struct {
-	fm          *filemanager.FileManager
-	template    *template.Template
-	contentPath string
-	SPAMode     bool
+	fm           *filemanager.FileManager
+	engine       *templates.TemplateEngine
+	contentPath  string
+	SPAMode      bool
 }
 
 type SPAHandler struct {
@@ -53,10 +54,10 @@ type APIHandler struct {
 	contentPath string
 }
 
-func NewWebHandler(fm *filemanager.FileManager, tmpl *template.Template, contentPath string, SPAMode bool) *WebHandler {
+func NewWebHandler(fm *filemanager.FileManager, engine *templates.TemplateEngine, contentPath string, SPAMode bool) *WebHandler {
 	return &WebHandler{
 		fm:          fm,
-		template:    tmpl,
+		engine:      engine,
 		contentPath: contentPath,
 		SPAMode:     SPAMode,
 	}
@@ -82,10 +83,15 @@ func NewAPIHandler(fm *filemanager.FileManager, contentPath string) *APIHandler 
 }
 
 func loadContent(fm *filemanager.FileManager, dir string, path string) *PageData {
-	contentPath := dir + "/" + path + "/" + contentFile
-	metaPath := dir + "/" + path + "/" + metaFile
-	stylePath := dir + "/" + path + "/" + styleFile
-	scriptPath := dir + "/" + path + "/" + scriptFile
+	// Simple aliasing for dev mode: map "/" to "home"
+	if path == "/" || path == "" {
+		path = "home"
+	}
+
+	contentPath := filepath.Join(dir, path, contentFile)
+	metaPath := filepath.Join(dir, path, metaFile)
+	stylePath := filepath.Join(dir, path, styleFile)
+	scriptPath := filepath.Join(dir, path, scriptFile)
 
 	pd := &PageData{
 		meta: defaultMeta,
@@ -119,7 +125,7 @@ func loadContent(fm *filemanager.FileManager, dir string, path string) *PageData
 			pd.style = style
 		}
 	} else if fm.Exists(stylePath) {
-		pd.styleExists = stylePath
+		pd.styleExists = "/" + stylePath
 	}
 
 	if pd.meta.InlineScript {
@@ -127,7 +133,7 @@ func loadContent(fm *filemanager.FileManager, dir string, path string) *PageData
 			pd.script = script
 		}
 	} else if fm.Exists(scriptPath) {
-		pd.scriptExists = scriptPath
+		pd.scriptExists = "/" + scriptPath
 	}
 
 	return pd
@@ -162,15 +168,7 @@ func (h *WebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data := struct {
-		Content   template.HTML
-		Style     template.CSS
-		Script    template.JS
-		StyleURL  string
-		ScriptURL string
-		Meta      *metaparser.MetaData
-		IsSPAMode bool
-	}{
+	data := templates.RenderData{
 		Meta:      pc.meta,
 		Content:   template.HTML(pc.content),
 		Style:     template.CSS(pc.style),
@@ -181,7 +179,9 @@ func (h *WebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.template.Execute(w, data)
+	if err := h.engine.Render(w, pc.meta.Template, data); err != nil {
+		http.Error(w, "Error rendering template", http.StatusInternalServerError)
+	}
 }
 
 func (h *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
