@@ -1,0 +1,135 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>config.toml — Gogogo Reference</title>
+<meta name="description" content="Every field in web/config.toml.">
+{{ end }}
+
+{{ define "content" }}
+<h1>config.toml</h1>
+<p class="lede">
+    A single file at <code>web/config.toml</code> describes the server,
+    the directory layout, and the list of sites. The build and the
+    runtime read it. Nothing else does.
+</p>
+
+<h2>Server</h2>
+<table>
+    <thead><tr><th>Key</th><th>Type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr><td><code>port</code></td><td>int</td><td>Listen port. Override at runtime via <code>PORT=8083 ./main</code>.</td></tr>
+        <tr><td><code>host</code></td><td>string</td><td>Bind interface. <code>0.0.0.0</code> for all.</td></tr>
+        <tr><td><code>read_timeout</code></td><td>duration</td><td>Per-connection read deadline. Strings like <code>"15s"</code>.</td></tr>
+        <tr><td><code>write_timeout</code></td><td>duration</td><td>Per-connection write deadline.</td></tr>
+        <tr><td><code>idle_timeout</code></td><td>duration</td><td>Keep-alive idle timeout.</td></tr>
+    </tbody>
+</table>
+
+<h2>Directories</h2>
+<table>
+    <thead><tr><th>Key</th><th>Default</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr><td><code>web</code></td><td><code>"web"</code></td><td>Project content root.</td></tr>
+        <tr><td><code>content</code></td><td><code>"content"</code></td><td>Per-site subdir for pages.</td></tr>
+        <tr><td><code>static</code></td><td><code>"static"</code></td><td>Per-site subdir for static assets.</td></tr>
+        <tr><td><code>templates</code></td><td><code>"templates"</code></td><td>Per-site subdir for layouts and partials.</td></tr>
+        <tr><td><code>dist</code></td><td><code>"dist"</code></td><td>Output for ActionFile-served files. Per-site sub-directory.</td></tr>
+        <tr><td><code>meta</code></td><td><code>"meta"</code></td><td>Where manifests, caches, and the SQLite DB live.</td></tr>
+    </tbody>
+</table>
+
+<div class="callout">
+    <p>
+        Each site lives at <code>&lt;web&gt;/&lt;site.Name&gt;/{content,static,templates}</code>.
+        Path conventions are uniform; only the site name changes.
+    </p>
+</div>
+
+<h2>Sites</h2>
+<p>
+    Each <code>[[site]]</code> block declares one site. The build emits a
+    manifest per site at <code>meta/&lt;name&gt;_router.bin</code>; the
+    runtime registers each <code>host</code> in a Host&rarr;manifest map.
+</p>
+
+<pre><code>[[<span class="ty">site</span>]]
+<span class="kw">name</span> = <span class="str">"main"</span>
+<span class="kw">hosts</span> = [<span class="str">"*"</span>]      <span class="com"># * = default fallback</span>
+
+[[<span class="ty">site</span>]]
+<span class="kw">name</span> = <span class="str">"docs"</span>
+<span class="kw">hosts</span> = [<span class="str">"docs.localhost"</span>]</code></pre>
+
+<table>
+    <thead><tr><th>Key</th><th>Type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr><td><code>name</code></td><td>string</td><td>Directory name under <code>web/</code>. Used as manifest filename prefix.</td></tr>
+        <tr><td><code>hosts</code></td><td>[]string</td><td>Host headers that route to this site. <code>"*"</code> marks the fallback.</td></tr>
+    </tbody>
+</table>
+
+<h3>Multiple hosts per site</h3>
+<p>
+    A site can listen on several hostnames &mdash; useful when alias and
+    canonical hostnames both need to work.
+</p>
+<pre><code>[[<span class="ty">site</span>]]
+<span class="kw">name</span> = <span class="str">"docs"</span>
+<span class="kw">hosts</span> = [<span class="str">"docs.example.com"</span>, <span class="str">"docs.localhost"</span>]</code></pre>
+
+<h3>The default fallback</h3>
+<p>
+    The first site listing <code>"*"</code> in its <code>hosts</code> is
+    used when no host matches. If no site claims <code>"*"</code>, the
+    first site in the file becomes the default.
+</p>
+
+<h2>Cache</h2>
+<p>Used by future request-cache features; currently informational.</p>
+<table>
+    <thead><tr><th>Key</th><th>Type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr><td><code>max_size</code></td><td>int</td><td>Max in-memory entries.</td></tr>
+        <tr><td><code>default_expiration</code></td><td>duration</td><td>Default TTL for cached responses.</td></tr>
+    </tbody>
+</table>
+
+<h2>Build</h2>
+<table>
+    <thead><tr><th>Key</th><th>Type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr><td><code>ignore_file</code></td><td>string</td><td>Filename for per-directory ignore patterns. Default <code>.buildignore</code>.</td></tr>
+    </tbody>
+</table>
+
+<h2>Full example</h2>
+<pre><code>[<span class="ty">server</span>]
+<span class="kw">port</span> = <span class="num">8082</span>
+<span class="kw">host</span> = <span class="str">"0.0.0.0"</span>
+<span class="kw">read_timeout</span>  = <span class="str">"15s"</span>
+<span class="kw">write_timeout</span> = <span class="str">"15s"</span>
+<span class="kw">idle_timeout</span>  = <span class="str">"60s"</span>
+
+[<span class="ty">directories</span>]
+<span class="kw">web</span> = <span class="str">"web"</span>
+<span class="kw">content</span> = <span class="str">"content"</span>
+<span class="kw">static</span> = <span class="str">"static"</span>
+<span class="kw">dist</span> = <span class="str">"dist"</span>
+<span class="kw">meta</span> = <span class="str">"meta"</span>
+<span class="kw">templates</span> = <span class="str">"templates"</span>
+
+[[<span class="ty">site</span>]]
+<span class="kw">name</span> = <span class="str">"main"</span>
+<span class="kw">hosts</span> = [<span class="str">"*"</span>]
+
+[[<span class="ty">site</span>]]
+<span class="kw">name</span> = <span class="str">"docs"</span>
+<span class="kw">hosts</span> = [<span class="str">"docs.localhost"</span>]</code></pre>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/actionfile" class="prev"><small>Previous</small>ActionFile</a>
+    <a href="/" class="next"><small>Back to</small>Overview &rarr;</a>
+</nav>
+{{ end }}

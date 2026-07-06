@@ -1,55 +1,30 @@
-// File: modules/server/listener.go
-
 package server
 
 import (
-	"log"
+	"context"
 	"net"
 	"syscall"
-	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-const (
-	tcpFastOpen     = 23  // TCP_FASTOPEN value for Linux
-	tcpFastOpenQlen = 256 // Queue length for TFO
-)
-
-type tcpKeepAliveListener struct {
-	*net.TCPListener
-	keepAlivePeriod time.Duration
-}
-
-func EnableFastOpen(ln net.Listener) {
-	tl, ok := ln.(*net.TCPListener)
-	if !ok {
-		return
+// NewReusePortListener creates a TCP listener with SO_REUSEPORT enabled.
+// This allows multiple bouncers (processes/threads) to listen on the same port.
+func NewReusePortListener(network, address string) (net.Listener, error) {
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var err error
+			c.Control(func(fd uintptr) {
+				// SO_REUSEPORT (TCP level load balancing)
+				err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+				if err != nil {
+					return
+				}
+				// SO_REUSEADDR (Fast restart)
+				err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+			})
+			return err
+		},
 	}
-
-	f, err := tl.File()
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	fd := int(f.Fd())
-	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_TCP, tcpFastOpen, tcpFastOpenQlen); err != nil {
-		log.Printf("TCP Fast Open enable failed: %v", err)
-	}
-}
-
-func (ln *tcpKeepAliveListener) Accept() (net.Conn, error) {
-	tc, err := ln.AcceptTCP()
-	if err != nil {
-		return nil, err
-	}
-
-	tc.SetKeepAlive(true)
-	tc.SetKeepAlivePeriod(ln.keepAlivePeriod)
-	tc.SetNoDelay(true)
-
-	// Divine Speed: Optimal buffer sizes
-	tc.SetReadBuffer(64 * 1024)
-	tc.SetWriteBuffer(64 * 1024)
-
-	return tc, nil
+	return lc.Listen(context.Background(), network, address)
 }

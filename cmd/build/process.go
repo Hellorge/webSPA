@@ -1,313 +1,167 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"crypto/md5"
-	"encoding/hex"
-	"html/template"
-
 	"fmt"
-	"gogogo/modules/metaparser"
-	"gogogo/modules/router"
-	"gogogo/modules/templates"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/andybalholm/brotli"
-	"github.com/evanw/esbuild/pkg/api"
+	"gogogo/modules/actions"
+	"gogogo/modules/build"
+	"gogogo/modules/router"
 )
 
+// ProcessResult is what a worker emits per file. Empty/zero ProcessResult
+// (Skip == true) means the file is metadata, not a route.
+//
+// FilePath is set for ActionFile entries — the on-disk path V2Compiler
+// records in the route blob so the runtime can sendfile it.
 type ProcessResult struct {
-	FileInfo     router.FileInfo
-	Content      []byte
-	Hash         string
-	Dependencies []string
+	FileInfo router.FileInfo
+	Holes    []build.Hole
+	FilePath string
+	Skip     bool
 }
 
+// embedThresholdBytes — files larger than this go to dist/ and serve via
+// ActionFile (sendfile from disk). Smaller files embed in the manifest.
+// Override in cmd/build/main.go via the -embed-threshold flag.
+var embedThresholdBytes int64 = 1 << 20 // 1 MiB
+
+// processFile is the type-dispatched entry. One function decides per-file
+// what to do based on the extension. No multi-stage walk, no per-stage
+// guards. Each branch is end-to-end for that file type.
+//
+// Tier decision: files exceeding embedThresholdBytes go to dist/ and
+// become ActionFile routes. HTML never disk-serves (templates need
+// processing through pongo2).
 func (w *Worker) processFile(item WorkItem) (ProcessResult, error) {
-	if w.ctx.dryRun {
-		return ProcessResult{
-			FileInfo: router.FileInfo{
-				ModTime:  item.Info.ModTime(),
-				DistPath: filepath.Join(w.ctx.config.Directories.Dist, item.AliasedPath),
-			},
-		}, nil
-	}
-
-	content, err := os.ReadFile(item.Path)
+	body, err := os.ReadFile(item.Path)
 	if err != nil {
-		return ProcessResult{}, fmt.Errorf("error reading file: %w", err)
+		return ProcessResult{}, fmt.Errorf("read %s: %w", item.RelPath, err)
 	}
 
-	hash := md5.Sum(content)
-	hashString := hex.EncodeToString(hash[:])
+	ext := strings.ToLower(filepath.Ext(item.Path))
 
-	if entry, ok := w.ctx.cache.Get(item.RelPath); ok && entry.Hash == hashString && !w.ctx.force {
-		return ProcessResult{
-			FileInfo: router.FileInfo{
-				ModTime:   item.Info.ModTime(),
-				DistPath:  entry.FileInfo.DistPath,
-				DependsOn: findDependencies(content),
-			},
-			Content:      content, // Content is already loaded above
-			Hash:         entry.Hash,
-			Dependencies: findDependencies(content),
-		}, nil
+	if int64(len(body)) >= embedThresholdBytes && ext != ".html" && ext != ".htm" {
+		return w.processDiskFile(body, item)
 	}
 
-	if filepath.Base(item.Path) == "content.html" {
-		return w.processContentHTML(item, content, hashString)
-	}
-
-	ext := filepath.Ext(item.Path)
-	var mimeType string
 	switch ext {
-	case ".html":
-		mimeType = "text/html"
+	case ".html", ".htm":
+		return w.processHTML(body, item)
+
 	case ".css":
-		mimeType = "text/css"
-	case ".js":
-		mimeType = "text/javascript"
-	}
-
-	var minified []byte
-	if ext == ".js" {
-		result := api.Transform(string(content), api.TransformOptions{
-			Loader:            api.LoaderJS,
-			MinifyWhitespace:  true,
-			MinifyIdentifiers: true,
-			MinifySyntax:      true,
-			Sourcemap:         api.SourceMapInline,
-		})
-		if len(result.Errors) > 0 {
-			return ProcessResult{}, fmt.Errorf("error minifying: %v", result.Errors)
-		}
-		minified = result.Code
-	} else if mimeType != "" {
-		var err error
-		minified, err = w.ctx.minifier.Bytes(mimeType, content)
+		out, err := w.ctx.minifier.Bytes("text/css", body)
 		if err != nil {
-			return ProcessResult{}, fmt.Errorf("error minifying: %w", err)
+			out = body
 		}
-	} else {
-		minified = content
+		return staticResult(item, out), nil
+
+	case ".js", ".mjs":
+		out, err := w.ctx.minifier.Bytes("text/javascript", body)
+		if err != nil {
+			out = body
+		}
+		return staticResult(item, out), nil
+
+	case ".json":
+		return staticResult(item, body), nil
+
+	default:
+		return staticResult(item, body), nil
+	}
+}
+
+// processDiskFile writes body to <distRoot>/<relPath> and returns an
+// ActionFile ProcessResult pointing at that disk path. The runtime serves
+// it via sendfile (no manifest payload, no in-memory copy). distRoot is
+// per-site (dist/<siteName>) so collisions across sites are impossible.
+func (w *Worker) processDiskFile(body []byte, item WorkItem) (ProcessResult, error) {
+	distPath := filepath.Join(w.ctx.distRoot, filepath.FromSlash(item.RelPath))
+	if err := os.MkdirAll(filepath.Dir(distPath), 0755); err != nil {
+		return ProcessResult{}, fmt.Errorf("mkdir for %s: %w", distPath, err)
+	}
+	if err := os.WriteFile(distPath, body, 0644); err != nil {
+		return ProcessResult{}, fmt.Errorf("write %s: %w", distPath, err)
+	}
+	return ProcessResult{
+		FileInfo: router.FileInfo{
+			ModTime:     item.Info.ModTime(),
+			AliasedPath: item.AliasedPath,
+			ActionID:    actions.ActionFile,
+		},
+		FilePath: distPath,
+	}, nil
+}
+
+// processHTML hands the body to the pongo2 renderer with the hole tag
+// wired up. All page metadata — alias, head, holes, page-local data —
+// lives in the source itself; there is no sibling meta.toml.
+//
+// Pages aren't a hardcoded concept — any HTML file that uses
+// {% extends %} gets layout inheritance for free. Files without extends
+// render as standalone HTML.
+func (w *Worker) processHTML(body []byte, item WorkItem) (ProcessResult, error) {
+	urlPath := item.AliasedPath
+	if !strings.HasPrefix(urlPath, "/") {
+		urlPath = "/" + urlPath
+	}
+	urlPath = strings.TrimSuffix(urlPath, "/")
+	if urlPath == "" {
+		urlPath = "/"
 	}
 
-	minifiedHash := md5.Sum(minified)
-	fileName := fmt.Sprintf("%s.%s%s",
-		strings.TrimSuffix(filepath.Base(item.Path), ext),
-		hex.EncodeToString(minifiedHash[:])[:8],
-		ext,
-	)
-
-	relDir := filepath.Dir(item.RelPath)
-	outPath := filepath.Join(w.ctx.outputDir, relDir, fileName)
-
-	if err := atomicWrite(outPath, minified); err != nil {
-		return ProcessResult{}, fmt.Errorf("error writing file: %w", err)
+	ctx := map[string]any{
+		"PagePath":  urlPath,
+		"IsSPAMode": false,
+		"StyleURL":  discoverSibling(item.Path, "style.css"),
+		"ScriptURL": discoverSibling(item.Path, "script.js"),
 	}
 
-	// Pre-compress with Brotli
-	brPath := outPath + ".br"
-	if err := compressBrotli(minified, brPath); err != nil {
-		return ProcessResult{}, fmt.Errorf("error compressing file: %w", err)
+	rendered, holes, err := w.ctx.renderer.RenderPage(body, ctx)
+	if err != nil {
+		return ProcessResult{}, fmt.Errorf("render %s: %w", item.RelPath, err)
 	}
 
-	// Nanosecond Cache: embed small assets directly in the router payload
-	var embeddedData []byte
-	if len(minified) < 4096 {
-		embeddedData = minified
+	// Pages without holes get HTML-minified. Hole pages must NOT be
+	// minified at this layer — hole.Position is a byte offset into the
+	// rendered body and the minifier reorders/shrinks bytes, breaking the
+	// runtime splice.
+	final := rendered
+	if len(holes) == 0 {
+		if mini, mErr := w.ctx.minifier.Bytes("text/html", rendered); mErr == nil {
+			final = mini
+		}
 	}
 
-	deps := findDependencies(content)
 	return ProcessResult{
 		FileInfo: router.FileInfo{
 			ModTime:      item.Info.ModTime(),
-			DistPath:     outPath,
-			BrotliPath:   brPath,
-			EmbeddedData: embeddedData,
+			EmbeddedData: final,
 			AliasedPath:  item.AliasedPath,
-			DependsOn:    deps,
 		},
-		Content:      minified,
-		Hash:         hashString,
-		Dependencies: deps,
+		Holes: holes,
 	}, nil
 }
 
-func findDependencies(content []byte) []string {
-	var deps []string
-	scanner := bufio.NewScanner(bytes.NewReader(content))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "import") || strings.Contains(line, "require") {
-			if dep := extractDependency(line); dep != "" {
-				deps = append(deps, dep)
-			}
-		}
-	}
-	return deps
-}
-
-func extractDependency(line string) string {
-	line = strings.TrimSpace(line)
-	if idx := strings.Index(line, "from"); idx != -1 {
-		line = line[idx+4:]
-	}
-	line = strings.Trim(line, "'\"`;")
-	if line != "" && !strings.HasPrefix(line, ".") {
-		return line
-	}
-	return ""
-}
-
-// processContentHTML handles content.html files by pre-rendering complete HTML pages
-func (w *Worker) processContentHTML(item WorkItem, content []byte, hashString string) (ProcessResult, error) {
-	// Determine relative page path for URL formation
-	contentRoot := filepath.Join(w.ctx.config.Directories.Web, w.ctx.config.Directories.Content)
-	parentDir := filepath.Dir(item.Path)
-	pagePath, err := filepath.Rel(contentRoot, parentDir)
-	if err != nil {
-		return ProcessResult{}, fmt.Errorf("error getting relative path: %w", err)
-	}
-
-	// Load meta, style, and script files
-	metaPath := filepath.Join(parentDir, "meta.toml")
-	stylePath := filepath.Join(parentDir, "style.css")
-	scriptPath := filepath.Join(parentDir, "script.js")
-
-	// Initialize page data
-	pd := struct {
-		content      []byte
-		style        []byte
-		script       []byte
-		styleExists  string
-		scriptExists string
-		meta         *metaparser.MetaData
-		err          error
-	}{
-		content: content,
-		meta:    &metaparser.MetaData{},
-	}
-
-	// Load meta.toml
-	metaContent, err := os.ReadFile(metaPath)
-	if err == nil {
-		if meta, err := metaparser.ParseMetaData(metaContent); err == nil {
-			pd.meta = meta
-		}
-	}
-
-	// Process style
-	if pd.meta.InlineStyle {
-		style, err := os.ReadFile(stylePath)
-		if err == nil {
-			pd.style = style
-		}
-	} else if _, err := os.Stat(stylePath); err == nil {
-		// Create style URL relative to static path
-		pd.styleExists = fmt.Sprintf("/static/%s/style.css", pagePath)
-	}
-
-	// Process script
-	if pd.meta.InlineScript {
-		script, err := os.ReadFile(scriptPath)
-		if err == nil {
-			pd.script = script
-		}
-	} else if _, err := os.Stat(scriptPath); err == nil {
-		// Create script URL relative to static path
-		pd.scriptExists = fmt.Sprintf("/static/%s/script.js", pagePath)
-	}
-
-	// Prepare template data
-	data := templates.RenderData{
-		Content:   template.HTML(pd.content),
-		Style:     template.CSS(pd.style),
-		Script:    template.JS(pd.script),
-		StyleURL:  pd.styleExists,
-		ScriptURL: pd.scriptExists,
-		Meta:      pd.meta,
-		IsSPAMode: false, // Always false for pre-rendered HTML
-	}
-
-	// Execute template using unified engine
-	var buf bytes.Buffer
-	if err := w.ctx.templateEngine.Render(&buf, pd.meta.Template, data); err != nil {
-		return ProcessResult{}, fmt.Errorf("error executing template: %w", err)
-	}
-
-	// Minify the resulting HTML
-	renderedHTML := buf.Bytes()
-	minified, err := w.ctx.minifier.Bytes("text/html", renderedHTML)
-	if err != nil {
-		return ProcessResult{}, fmt.Errorf("error minifying HTML: %w", err)
-	}
-
-	ext := filepath.Ext(item.Path)
-	minifiedHash := md5.Sum(minified)
-	fileName := fmt.Sprintf("%s.%s%s",
-		strings.TrimSuffix(filepath.Base(item.Path), ext),
-		hex.EncodeToString(minifiedHash[:])[:8],
-		ext,
-	)
-
-	relDir := filepath.Dir(item.RelPath)
-	outPath := filepath.Join(w.ctx.outputDir, relDir, fileName)
-
-	// Write the pre-rendered HTML file
-	if err := atomicWrite(outPath, minified); err != nil {
-		return ProcessResult{}, fmt.Errorf("error writing HTML file: %w", err)
-	}
-
-	// Pre-compress with Brotli
-	brPath := outPath + ".br"
-	if err := compressBrotli(minified, brPath); err != nil {
-		return ProcessResult{}, fmt.Errorf("error compressing HTML: %w", err)
-	}
-
-	// Nanosecond Cache: embed small assets directly in the router payload
-	var embeddedData []byte
-	if len(minified) < 4096 {
-		embeddedData = minified
-	}
-
-	// Regular return for the router
+// staticResult wraps a non-templated file's bytes into a ProcessResult.
+func staticResult(item WorkItem, body []byte) ProcessResult {
 	return ProcessResult{
 		FileInfo: router.FileInfo{
 			ModTime:      item.Info.ModTime(),
-			DistPath:     outPath,
-			BrotliPath:   brPath,
-			EmbeddedData: embeddedData,
-			AliasedPath: func() string {
-				if pd.meta.Alias != "" {
-					return pd.meta.Alias
-				}
-				// Fallback to directory name
-				alias := "/" + filepath.ToSlash(pagePath)
-				if !strings.HasPrefix(alias, "/") {
-					alias = "/" + alias
-				}
-				return alias
-			}(),
-			DependsOn:    []string{}, // Pre-rendered HTML doesn't need dependencies
+			EmbeddedData: body,
+			AliasedPath:  item.AliasedPath,
 		},
-		Content:      minified,
-		Hash:         hashString,
-		Dependencies: []string{},
-	}, nil
+	}
 }
 
-func compressBrotli(data []byte, outPath string) error {
-	var buf bytes.Buffer
-	writer := brotli.NewWriterLevel(&buf, brotli.BestCompression)
-	if _, err := writer.Write(data); err != nil {
-		return err
+// discoverSibling returns the URL of a sibling asset like style.css or
+// script.js if it exists next to the page. Returns "" otherwise.
+func discoverSibling(pagePath, name string) string {
+	siblingPath := filepath.Join(filepath.Dir(pagePath), name)
+	if _, err := os.Stat(siblingPath); err != nil {
+		return ""
 	}
-	if err := writer.Close(); err != nil {
-		return err
-	}
-	return atomicWrite(outPath, buf.Bytes())
+	return "/" + filepath.Join(filepath.Base(filepath.Dir(pagePath)), name)
 }

@@ -9,10 +9,6 @@ import (
 	"sync"
 )
 
-type BufferPool struct {
-	pool sync.Pool
-}
-
 type ErrorCollector struct {
 	mu     sync.Mutex
 	errors []error
@@ -25,24 +21,6 @@ type IgnorePatterns struct {
 
 var ignoreCache = &IgnorePatterns{
 	patterns: make(map[string][]string),
-}
-
-func NewBufferPool(size int) *BufferPool {
-	return &BufferPool{
-		pool: sync.Pool{
-			New: func() interface{} {
-				return make([]byte, 0, size)
-			},
-		},
-	}
-}
-
-func (bp *BufferPool) Get() []byte {
-	return bp.pool.Get().([]byte)
-}
-
-func (bp *BufferPool) Put(b []byte) {
-	bp.pool.Put(b[:0])
 }
 
 func NewErrorCollector() *ErrorCollector {

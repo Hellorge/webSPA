@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"gogogo/modules/build"
 	"gogogo/modules/router"
 	"os"
 	"sync"
@@ -15,8 +16,9 @@ type Cache struct {
 
 type CacheEntry struct {
 	FileInfo router.FileInfo
-	Hash     string
 	RelPath  string
+	Holes    []build.Hole
+	FilePath string // for ActionFile entries — disk path the runtime sendfiles
 }
 
 type DependencyGraph struct {

@@ -16,16 +16,15 @@ type WorkerPool struct {
 }
 
 type Worker struct {
-	id     int
-	ctx    *BuildContext
-	buffer []byte
+	id  int
+	ctx *BuildContext
 }
 
 type WorkItem struct {
 	Path        string
 	RelPath     string
 	Info        os.FileInfo
-	AliasedPath string // Added this field
+	AliasedPath string
 }
 
 func NewWorkerPool(concurrency int, ctx *BuildContext) *WorkerPool {
@@ -36,11 +35,7 @@ func NewWorkerPool(concurrency int, ctx *BuildContext) *WorkerPool {
 	}
 
 	for i := 0; i < concurrency; i++ {
-		wp.workers[i] = &Worker{
-			id:     i,
-			ctx:    ctx,
-			buffer: make([]byte, defaultBufferSize),
-		}
+		wp.workers[i] = &Worker{id: i, ctx: ctx}
 		go wp.workers[i].start(wp)
 	}
 
@@ -77,25 +72,22 @@ func (w *Worker) process(item WorkItem) error {
 	if err != nil {
 		return fmt.Errorf("error processing %s: %w", item.Path, err)
 	}
+	if result.Skip {
+		// File is metadata (e.g. meta.toml); not registered as a route.
+		return nil
+	}
 
 	if w.ctx.stats && !w.ctx.dryRun {
-		// Track minified size for stats
-		atomic.AddInt64(&w.ctx.buildStats.MinifiedSize, int64(len(result.Content)))
+		atomic.AddInt64(&w.ctx.buildStats.MinifiedSize, int64(len(result.FileInfo.EmbeddedData)))
 	}
 
 	if !w.ctx.dryRun {
-		// Only update caches in non-dry-run mode
-		w.ctx.cache.Set(item.AliasedPath, CacheEntry{
+		w.ctx.cache.Set(item.RelPath, CacheEntry{
 			FileInfo: result.FileInfo,
-			Hash:     result.Hash,
 			RelPath:  item.RelPath,
+			Holes:    result.Holes,
+			FilePath: result.FilePath,
 		})
-
-		if len(result.Dependencies) > 0 {
-			for _, dep := range result.Dependencies {
-				w.ctx.depGraph.AddDependency(item.RelPath, dep)
-			}
-		}
 	}
 
 	return nil

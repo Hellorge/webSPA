@@ -1,0 +1,150 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>ActionFile — Gogogo Concepts</title>
+<meta name="description" content="How large files are served via sendfile, with Range-request support.">
+{{ end }}
+
+{{ define "content" }}
+<h1>ActionFile</h1>
+<p class="lede">
+    Files past a configurable size threshold skip the manifest and serve
+    via <code>sendfile(2)</code>. Range-aware. HEAD-aware.
+    Bytes go kernel&rarr;kernel without ever touching userspace.
+</p>
+
+<h2>How the build decides</h2>
+<p>
+    Each file under <code>web/&lt;site&gt;/static/</code> goes through
+    type-dispatch. CSS gets minified. JS gets minified. HTML always embeds
+    in the manifest because templates need processing. Everything else, if
+    it's at or above <code>-embed-threshold</code> (1 MiB by default), is
+    promoted to an ActionFile route.
+</p>
+
+<table>
+    <thead>
+        <tr><th>Extension</th><th>Behavior</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>.html</code></td><td>Always embed. Template processing required.</td></tr>
+        <tr><td><code>.css</code> / <code>.js</code></td><td>Minify, then embed.</td></tr>
+        <tr><td>everything else</td><td>Below threshold &rarr; embed. At/above &rarr; ActionFile.</td></tr>
+    </tbody>
+</table>
+
+<h2>The route blob</h2>
+<p>
+    An ActionFile route doesn't have payload bytes in the manifest. Instead
+    its <code>HoleOffset</code> points at a small blob:
+</p>
+<pre><code><span class="com">// stored in the manifest's HoleBlobs region</span>
+[<span class="ty">pathLen</span>: <span class="num">u16</span>] [<span class="ty">path</span>: <span class="num">N</span> <span class="ty">bytes</span>]</code></pre>
+<p>
+    Where <code>path</code> is the disk path the runtime opens. The build
+    writes the actual bytes to <code>dist/&lt;site&gt;/&lt;relPath&gt;</code>
+    so two sites can have files with the same relative path without
+    collision.
+</p>
+
+<h2>The runtime path</h2>
+<pre><code><span class="kw">func</span> <span class="fn">serveFile</span>(<span class="ty">req</span>, <span class="ty">resp</span>, <span class="ty">entry</span>, <span class="ty">manifest</span>, <span class="ty">st</span>) {
+    <span class="ty">file</span> := os.Open(<span class="fn">readFileBlob</span>(...))
+    <span class="ty">heads</span> := st.fileHeads[<span class="fn">mimeForFile</span>(path)]
+
+    <span class="kw">if</span> <span class="fn">hasRange</span>(req) {
+        resp.HeadID = heads.head206
+        resp.SetContentRange(start, end, fi.Size())
+        resp.Stream = <span class="kw">func</span>(w io.Writer) <span class="kw">error</span> {
+            <span class="kw">defer</span> file.Close()
+            _, err := io.CopyN(w, file, length)
+            <span class="kw">return</span> err
+        }
+        <span class="kw">return</span>
+    }
+
+    resp.HeadID = heads.head200
+    resp.Stream = <span class="kw">func</span>(w io.Writer) <span class="kw">error</span> {
+        <span class="kw">defer</span> file.Close()
+        _, err := io.Copy(w, file)
+        <span class="kw">return</span> err
+    }
+}</code></pre>
+<p>
+    On Linux, Go's runtime promotes <code>io.Copy(*TCPConn, *os.File)</code>
+    into a <code>sendfile(2)</code> syscall. The bytes never visit the Go
+    heap. The CPU isn't doing copies; the kernel is.
+</p>
+
+<h2>Heads are pre-baked too</h2>
+<p>
+    When the server loads a manifest, it walks every ActionFile route and
+    pre-registers two HTTP heads per mime type: one for <code>200 OK</code>
+    and one for <code>206 Partial Content</code>. Both bake
+    <code>Accept-Ranges: bytes</code>. At request time, picking the right
+    head is a map lookup; the bytes go straight to the wire.
+</p>
+
+<h2>Try it</h2>
+<p>
+    The fixture below is a 5 MiB blob served via ActionFile. Probe it from
+    the browser and watch the response headers.
+</p>
+
+<div class="actionfile-demo">
+    <p>
+        <a href="/static/media/sample.bin" download>&darr; Download sample.bin (5 MiB)</a>
+    </p>
+    <div class="controls">
+        <button id="probe-full" type="button">GET full</button>
+        <button id="probe-range" type="button">GET bytes 100-199</button>
+        <button id="probe-tail" type="button">GET last 256 bytes</button>
+        <button id="probe-head" type="button">HEAD</button>
+    </div>
+    <pre id="probe-output">Click a button to send a request.</pre>
+</div>
+
+<script>
+    (function () {
+        const out = document.getElementById('probe-output');
+        const url = '/static/media/sample.bin';
+
+        function show(label, status, h, bodyLen) {
+            const lines = [label + '  →  status ' + status];
+            const wanted = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
+            for (const name of wanted) {
+                const v = h.get(name);
+                if (v !== null) lines.push('  ' + name + ': ' + v);
+            }
+            if (bodyLen !== undefined) lines.push('  body bytes received: ' + bodyLen.toLocaleString());
+            out.textContent = lines.join('\n');
+        }
+
+        async function fetchAndShow(label, opts) {
+            const r = await fetch(url, opts);
+            if (opts && opts.method === 'HEAD') {
+                show(label, r.status, r.headers);
+            } else {
+                const buf = await r.arrayBuffer();
+                show(label, r.status, r.headers, buf.byteLength);
+            }
+        }
+
+        document.getElementById('probe-full').addEventListener('click', () =>
+            fetchAndShow('GET (full file)'));
+        document.getElementById('probe-range').addEventListener('click', () =>
+            fetchAndShow('GET bytes=100-199', { headers: { Range: 'bytes=100-199' } }));
+        document.getElementById('probe-tail').addEventListener('click', () =>
+            fetchAndShow('GET bytes=-256 (last 256)', { headers: { Range: 'bytes=-256' } }));
+        document.getElementById('probe-head').addEventListener('click', () =>
+            fetchAndShow('HEAD', { method: 'HEAD' }));
+    })();
+</script>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/middleware" class="prev"><small>Previous</small>Middleware</a>
+    <a href="/reference/config" class="next"><small>Next</small>config.toml &rarr;</a>
+</nav>
+{{ end }}

@@ -1,0 +1,183 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>Holes — Gogogo concepts</title>
+<meta name="description" content="How live SQL data gets spliced into pre-baked HTML envelopes, with the row + per-row template + output cache.">
+{{ end }}
+
+{{ define "content" }}
+<h1>Holes</h1>
+<p class="lede">
+    A hole is a marked spot in your HTML where the engine splices fresh
+    SQL data at request time. The envelope around it &mdash; layout, text,
+    classes &mdash; is baked once at build. Only the rows change.
+</p>
+
+<h2>The shape</h2>
+<p>
+    One inline tag declares the SQL and wraps the per-row body template:
+</p>
+<pre><code><span class="kw">&#123;% hole</span> <span class="str">"SELECT title, summary, date FROM news ORDER BY date DESC"</span> <span class="kw">%&#125;</span>
+&lt;<span class="ty">li</span>&gt;
+  &lt;<span class="ty">strong</span>&gt;<span class="kw">&#123;&#123;</span> <span class="fn">.title</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">strong</span>&gt; &mdash; <span class="kw">&#123;&#123;</span> <span class="fn">.summary</span> <span class="kw">&#125;&#125;</span>
+&lt;/<span class="ty">li</span>&gt;
+<span class="kw">&#123;% endhole %&#125;</span></code></pre>
+<p>
+    Inside the body, the dot context is the current SQL row as a map.
+    <code>&#123;&#123; .title &#125;&#125;</code> reads the <code>title</code> column.
+    The body repeats once per row. The engine uses
+    <strong>Go's stdlib <code>text/template</code></strong> for the
+    body &mdash; you have <code>{{ "{{ if }}" }}</code>, <code>{{ "{{ range }}" }}</code>,
+    <code>{{ "{{ with }}" }}</code>, <code>printf</code>, <code>html</code>,
+    every builtin.
+</p>
+
+<h2>What happens at build</h2>
+<ol>
+    <li>
+        The build byte-scans each page's <code>content.html</code>,
+        extracts every hole's SQL and body, and stores them in parallel
+        arrays indexed by appearance order. The hole site in the HTML
+        is replaced with a unique marker carrying the hole's index.
+    </li>
+    <li>
+        <code>text/template</code> renders the page envelope normally
+        &mdash; <code>{{ "{{ extends }}" }}</code>,
+        <code>{{ "{{ block }}" }}</code>,
+        <code>{{ "{{ template }}" }}</code>, all of it. The markers pass
+        through untouched.
+    </li>
+    <li>
+        The build scans the rendered output for the markers, records
+        each byte offset, strips them. The result is a clean envelope
+        plus a list of <code>(position, sql, body)</code> tuples baked
+        into the manifest.
+    </li>
+</ol>
+
+<h2>What happens at request time</h2>
+<ol>
+    <li>The router finds the route. The envelope is mmap'd bytes from
+        the manifest.</li>
+    <li>For each hole:
+        <ul>
+            <li>Run the SQL through <a href="/concepts/fastdb">fastdb</a>'s
+                row cache &mdash; hit returns cached rows, miss runs
+                SQLite and caches.</li>
+            <li>Run the per-row body template once per row, appending
+                output to a buffer.</li>
+        </ul>
+    </li>
+    <li>Splice the hole output into the envelope at the recorded
+        offset, then write to the connection.</li>
+</ol>
+
+<h2>The hole's template context</h2>
+<p>Three things show up under dot in a hole body:</p>
+<ul>
+    <li><strong>SQL row columns</strong> as <code>.columnname</code>.
+        Maps directly to the result set.</li>
+    <li><strong>URL bindings</strong> as <code>._params.name</code>
+        when the route is registered with a param/catch-all pattern.
+        See <a href="/concepts/routing">routing</a>.</li>
+    <li>Nothing else &mdash; no global state, no Request reference. By
+        design.</li>
+</ul>
+
+<h2>Empty-SQL holes</h2>
+<p>
+    A hole with empty SQL runs its template exactly once with just the
+    URL bindings &mdash; no DB call at all. Useful for pure URL-derived
+    content:
+</p>
+<pre><code><span class="kw">&#123;% hole</span> <span class="str">""</span> <span class="kw">%&#125;</span>
+&lt;<span class="ty">h1</span>&gt;User <span class="kw">&#123;&#123;</span> <span class="fn">._params.id</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">h1</span>&gt;
+<span class="kw">&#123;% endhole %&#125;</span></code></pre>
+
+<h2>Caching layers</h2>
+<p>Hole pages without URL params benefit from three independent caches:</p>
+<table>
+    <thead><tr><th>Layer</th><th>Skips on hit</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><a href="/concepts/output-cache">Output cache</a></td>
+            <td>Everything &mdash; SQL, template, splice, compression</td>
+        </tr>
+        <tr>
+            <td><a href="/concepts/fastdb">fastdb row cache</a></td>
+            <td>SQLite parse + execute + row materialisation</td>
+        </tr>
+        <tr>
+            <td>Template parse cache</td>
+            <td>Re-parsing the body template (parsed once at server load)</td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    All three share one invalidation signal: fastdb's write events. A
+    write to a referenced table drops the matching output-cache
+    entries, drops the row-cache entries, and the next request
+    renders from scratch. Pages with URL bindings cache by
+    (route, bindings) &mdash; each distinct URL is its own entry,
+    same lifecycle.
+</p>
+
+<h2>Why it's fast</h2>
+<ul>
+    <li><strong>Layout never re-renders.</strong> The envelope is
+        pre-baked bytes; the runtime just writes them.</li>
+    <li><strong>Positions are precomputed.</strong> No re-parse, no
+        AST walk, no string search at request time.</li>
+    <li><strong>SQL only runs when needed.</strong> Cached pages skip
+        the DB entirely. Pages without holes never touch SQLite.</li>
+    <li><strong>Bindings are first-class.</strong>
+        <code>._params</code> is just a key in the template context;
+        no special interpreter pass.</li>
+</ul>
+
+<h2>Live: every news row</h2>
+<p>
+    The list below is rendered into this very page right now. The
+    envelope was baked at build; the rows came from a fastdb query
+    that ran (or was served from cache &mdash; you can't tell from
+    here, that's the point).
+</p>
+<ul class="news-list">
+    {% hole "SELECT title, summary, date FROM news ORDER BY date DESC" %}
+    <li>
+        <strong>{{ .title }}</strong> {{ .summary }}
+        <time>{{ .date }}</time>
+    </li>
+    {% endhole %}
+</ul>
+
+<h2>Live: scalar query</h2>
+<p>A hole works for a single-row scalar too &mdash; the body runs once.</p>
+<p class="metric">
+    News rows in DB:
+    {% hole "SELECT COUNT(*) AS n FROM news" %}<strong>{{ .n }}</strong>{% endhole %}
+</p>
+
+<h2>What you can't do</h2>
+<div class="callout">
+    <ul>
+        <li>Holes can't nest. The body is a per-row template, not a
+            full template program.</li>
+        <li>Holes can't share state across sites &mdash; each site's
+            manifest carries its own.</li>
+        <li>Hole bodies can't run arbitrary Go code (use an action
+            handler for that). They run text/template with stdlib
+            funcs &mdash; full grammar, no escape hatches.</li>
+        <li>A hole's SQL is fixed at build time. Per-request SQL with
+            bound parameters from the URL is a planned extension, not
+            present today.</li>
+    </ul>
+</div>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/quickstart" class="prev"><small>Previous</small>Quickstart</a>
+    <a href="/concepts/routing" class="next"><small>Next</small>Routing &rarr;</a>
+</nav>
+{{ end }}

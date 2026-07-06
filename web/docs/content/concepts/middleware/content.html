@@ -1,0 +1,123 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>Middleware — Gogogo Concepts</title>
+<meta name="description" content="Per-route middleware: registry, name lists, chain runner, short-circuiting.">
+{{ end }}
+
+{{ define "content" }}
+<h1>Middleware</h1>
+<p class="lede">
+    Per-route hooks that run before the handler. Each one can short-
+    circuit the chain. The engine provides the machinery; you decide
+    what auth, rate limiting, audit, or anything else looks like for
+    your site.
+</p>
+
+<h2>The shape</h2>
+<p>
+    A middleware is a function: take a <code>RouteCtx</code>, return
+    <code>true</code> to continue or <code>false</code> to short-
+    circuit. A short-circuit means the handler does not run; the
+    middleware is responsible for having written a response.
+</p>
+
+<pre><code><span class="kw">type</span> Middleware <span class="kw">func</span>(c *RouteCtx) <span class="ty">bool</span></code></pre>
+
+<p>Examples in shape:</p>
+
+<pre><code><span class="kw">func</span> <span class="fn">requireAuth</span>(c *RouteCtx) <span class="ty">bool</span> {
+    user := lookupSession(c.Req)
+    <span class="kw">if</span> user == <span class="kw">nil</span> {
+        c.Resp.HeadID = head401
+        c.Resp.Body = []<span class="ty">byte</span>(<span class="str">"Unauthorized"</span>)
+        <span class="kw">return</span> <span class="kw">false</span>
+    }
+    <span class="com">// attach to ctx so the handler can read user</span>
+    <span class="kw">return</span> <span class="kw">true</span>
+}
+
+<span class="kw">func</span> <span class="fn">auditLog</span>(c *RouteCtx) <span class="ty">bool</span> {
+    log.Printf(<span class="str">"%s %s"</span>, c.Req.Method, c.Req.Path)
+    <span class="kw">return</span> <span class="kw">true</span>   <span class="com">// always continue</span>
+}</code></pre>
+
+<h2>Registration</h2>
+<p>
+    Middleware are global by name. Modules call
+    <code>actions.RegisterMiddleware</code> in their <code>init()</code>:
+</p>
+
+<pre><code><span class="kw">func</span> <span class="fn">init</span>() {
+    actions.RegisterMiddleware(<span class="str">"auth"</span>, requireAuth)
+    actions.RegisterMiddleware(<span class="str">"audit"</span>, auditLog)
+}</code></pre>
+
+<p>
+    Re-registering an existing name panics &mdash; conflicts surface
+    at startup, not at request time.
+</p>
+
+<h2>Per-route declaration</h2>
+<p>
+    Routes opt in by listing middleware names. They run in declaration
+    order, before the handler:
+</p>
+
+<pre><code>{<span class="kw">Path</span>: <span class="str">"api/posts/:id"</span>, <span class="kw">Method</span>: <span class="str">"DELETE"</span>,
+ <span class="kw">Middleware</span>: <span class="str">"auth, audit"</span>,
+ <span class="kw">ActionID</span>: DeletePost}</code></pre>
+
+<p>
+    The build packs the names into the manifest's
+    <code>MiddlewareBlobs</code> section as length-prefixed strings,
+    one group per route. At server load, the names are resolved
+    against the registry into a function-pointer slice cached on
+    <code>appState.mwChain[manifest][routeIdx]</code>. Unknown names
+    fail the load &mdash; better than silent no-op at request time.
+</p>
+
+<h2>What the engine deliberately doesn't provide</h2>
+<div class="callout">
+    <p>
+        gogogo ships the middleware <em>machinery</em>, not the
+        middleware. There is no built-in auth, no built-in rate
+        limiter, no built-in user model. Those are application
+        concerns &mdash; what counts as "logged in", what a role is,
+        how rate-limit policies are scoped, what storage to use for
+        sessions &mdash; varies wildly across apps.
+    </p>
+    <p>
+        Optional reference modules (e.g. <code>modules/auth</code>
+        when it lands) will register middleware under common names
+        (<code>"auth"</code>, etc.). Apps that want them import the
+        module. Apps that don't write their own.
+    </p>
+</div>
+
+<h2>Why this shape</h2>
+<ul>
+    <li><strong>Names, not IDs.</strong> Build emits string names;
+        runtime resolves them. New middleware = new registration. No
+        renumbering, no schema collision.</li>
+    <li><strong>Always-on cross-cutting stays inline.</strong> Things
+        every request needs (request ID generation, metrics, the
+        future <code>gogolog</code>) live in the dispatcher's main
+        path. Middleware are for per-route opt-in.</li>
+    <li><strong>Single-phase, no post-hooks.</strong> If a middleware
+        needs to act after the handler, it sets up state via RouteCtx
+        the handler reads back. Keeps the chain a simple for-loop
+        with one branch.</li>
+    <li><strong>Hot path stays minimal.</strong> No middleware on a
+        route → zero work. One middleware → one function call, one
+        bool check. The pooled RouteCtx is the only allocation, and
+        only when the route needs one.</li>
+</ul>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/routing" class="prev"><small>Previous</small>Routing</a>
+    <a href="/concepts/actionfile" class="next"><small>Next</small>ActionFile &rarr;</a>
+</nav>
+{{ end }}

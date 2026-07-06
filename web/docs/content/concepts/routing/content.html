@@ -1,0 +1,187 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>Routing — Gogogo concepts</title>
+<meta name="description" content="Trie-based routing with literal + :param + *catchall, method dispatch, captured bindings into your page templates.">
+{{ end }}
+
+{{ define "content" }}
+<h1>Routing</h1>
+<p class="lede">
+    One trie walks every request. Literal segments, captured params,
+    catch-all suffixes &mdash; the same lookup, the same matcher, the
+    same dispatch path. URL bindings reach your page templates the same
+    way SQL row data does.
+</p>
+
+<h2>Pattern syntax</h2>
+<pre><code><span class="str">"/api/users"</span>          <span class="com">// literal — matches exactly /api/users</span>
+<span class="str">"/api/users/:id"</span>      <span class="com">// :name captures one segment as a binding</span>
+<span class="str">"/static/*path"</span>       <span class="com">// *name captures the rest (must be terminal)</span></code></pre>
+
+<p>
+    You declare the pattern as the page's alias. Build registers it in
+    the trie; nothing else changes about how you author the page.
+</p>
+<pre><code><span class="com">&lt;!-- web/main/content/user_profile/content.html --&gt;</span>
+<span class="kw">&#123;% extends</span> <span class="str">"def"</span> <span class="kw">%&#125;</span>
+<span class="kw">&#123;% alias</span> <span class="str">"/users/:id"</span> <span class="kw">%&#125;</span>
+
+&lt;<span class="ty">h1</span>&gt;User <span class="kw">&#123;&#123;</span> <span class="fn">._params.id</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">h1</span>&gt;</code></pre>
+
+<h2>Try it live</h2>
+<p>Same page, same template, different URLs &mdash; same engine handling each:</p>
+
+<h3>Literal route</h3>
+<p>The simplest case. URL matches exactly, nothing captured.</p>
+<ul>
+    <li><a href="/concepts/holes">/concepts/holes</a> &mdash; this doc page itself</li>
+    <li><a href="/quickstart">/quickstart</a></li>
+</ul>
+
+<h3>Param route (<code>:name</code>)</h3>
+<p>
+    Captures exactly one URL segment. Click any of these &mdash; same
+    underlying file, different binding:
+</p>
+<ul>
+    <li><a href="/playground/about">/playground/about</a> &nbsp;&rarr;&nbsp;
+        <code>section = "about"</code></li>
+    <li><a href="/playground/users">/playground/users</a> &nbsp;&rarr;&nbsp;
+        <code>section = "users"</code></li>
+    <li><a href="/playground/anything-you-want">/playground/anything-you-want</a> &nbsp;&rarr;&nbsp;
+        <code>section = "anything-you-want"</code></li>
+</ul>
+
+<h3>Catch-all route (<code>*name</code>)</h3>
+<p>
+    Captures one OR more segments, joined with slashes. Must be the
+    last element in the pattern.
+</p>
+<ul>
+    <li><a href="/catchall/single">/catchall/single</a> &nbsp;&rarr;&nbsp;
+        <code>rest = "single"</code></li>
+    <li><a href="/catchall/files/2024/report.pdf">/catchall/files/2024/report.pdf</a> &nbsp;&rarr;&nbsp;
+        <code>rest = "files/2024/report.pdf"</code></li>
+    <li><a href="/catchall/a/b/c/d/e">/catchall/a/b/c/d/e</a> &nbsp;&rarr;&nbsp;
+        <code>rest = "a/b/c/d/e"</code></li>
+</ul>
+
+<h2>Precedence on overlap</h2>
+<p>
+    At any trie node, children can be literal, a single <code>:param</code>,
+    and a single <code>*catchall</code>. Match order:
+    <strong>literal &gt; param &gt; catch-all</strong>.
+</p>
+<pre><code><span class="com">// these three coexist as siblings at the same parent</span>
+<span class="str">"/x/foo"</span>      <span class="com">// literal — wins for /x/foo</span>
+<span class="str">"/x/:p"</span>       <span class="com">// param   — wins for /x/bar (p = "bar")</span>
+<span class="str">"/x/*all"</span>     <span class="com">// catch-all — wins for /x/a/b/c (all = "a/b/c")</span></code></pre>
+
+<p>
+    Mixing literal and dynamic siblings is legal &mdash;
+    <code>/users/me</code> and <code>/users/:id</code> can both exist;
+    the literal wins for <code>/users/me</code>, the param catches
+    everything else.
+</p>
+
+<h2>Reaching bindings inside your page</h2>
+<p>
+    Captured params appear under the special key <code>_params</code>
+    in every hole body. The underscore prefix is reserved so SQL column
+    names can't collide. Two ways to use it:
+</p>
+
+<h3>1. As a no-DB hole (empty SQL)</h3>
+<p>
+    A <code>&#123;% hole "" %&#125;</code> block runs its template once with just
+    the URL bindings &mdash; no DB call. Useful for pure URL-derived
+    content (an API echo, a profile header, anything that doesn't need
+    SQL).
+</p>
+<pre><code><span class="kw">&#123;% hole</span> <span class="str">""</span> <span class="kw">%&#125;</span>
+&lt;<span class="ty">h1</span>&gt;User <span class="kw">&#123;&#123;</span> <span class="fn">._params.id</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">h1</span>&gt;
+<span class="kw">&#123;% endhole %&#125;</span></code></pre>
+
+<h3>2. Mixed with SQL</h3>
+<p>
+    Inside a normal SQL hole, both <code>&#123;&#123; .column &#125;&#125;</code> and
+    <code>&#123;&#123; ._params.id &#125;&#125;</code> work. SQL row columns and URL
+    bindings live in the same template context.
+</p>
+<pre><code><span class="kw">&#123;% hole</span> <span class="str">"SELECT name FROM users WHERE id = 1"</span> <span class="kw">%&#125;</span>
+&lt;<span class="ty">h1</span>&gt;<span class="kw">&#123;&#123;</span> <span class="fn">.name</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">h1</span>&gt;
+&lt;<span class="ty">p</span>&gt;profile id: <span class="kw">&#123;&#123;</span> <span class="fn">._params.id</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">p</span>&gt;
+<span class="kw">&#123;% endhole %&#125;</span></code></pre>
+
+<h2>Method dispatch</h2>
+<p>
+    Each route declares the HTTP methods it accepts (comma-separated;
+    default is <code>GET</code>). Declaring <code>GET</code> implicitly
+    enables <code>HEAD</code>. A request whose method isn't allowed
+    gets <code>405 Method Not Allowed</code> with a pre-baked
+    <code>Allow:</code> header.
+</p>
+<pre><code>{<span class="kw">Path</span>: <span class="str">"api/posts"</span>,     <span class="kw">Method</span>: <span class="str">"GET"</span>,         <span class="kw">ActionID</span>: ListPosts}
+{<span class="kw">Path</span>: <span class="str">"api/posts"</span>,     <span class="kw">Method</span>: <span class="str">"POST"</span>,        <span class="kw">ActionID</span>: CreatePost}
+{<span class="kw">Path</span>: <span class="str">"api/posts/:id"</span>, <span class="kw">Method</span>: <span class="str">"GET, PATCH, DELETE"</span>, <span class="kw">ActionID</span>: PostByID}</code></pre>
+
+<p>
+    Try it: studio's <code>/sql</code> endpoint is POST-only. Send GET
+    and the engine returns 405 with <code>Allow: POST</code>.
+</p>
+<pre><code><span class="kw">$</span> curl -i -H <span class="str">'Host: studio.localhost'</span> http://localhost:8082/sql
+HTTP/1.1 <span class="num">405</span> Method Not Allowed
+Server: Gogogo
+<span class="kw">Allow</span>: POST
+Content-Type: text/plain; charset=utf-8</code></pre>
+
+<h2>Special conditions and caveats</h2>
+<div class="callout">
+    <ul>
+        <li><strong>Catch-all must be terminal.</strong>
+            <code>/a/*b/c</code> is invalid &mdash; once you start
+            catching the rest, you can't put literal segments after.</li>
+        <li><strong>One catch-all per pattern.</strong>
+            <code>/a/*b/*c</code> is invalid; everything after the
+            first <code>*</code> goes into that one binding.</li>
+        <li><strong>Param/catch-all routes cache by (route, bindings).</strong>
+            The cache key includes a hash of the URL bindings, so
+            <code>/users/1</code> and <code>/users/2</code> become
+            separate entries. Hot URLs serve from cache at static-page
+            QPS; one-shot URLs (per-session UUIDs etc.) LRU-evict and
+            effectively render fresh. No per-installation tuning.</li>
+        <li><strong>Param names must be consistent at a depth.</strong>
+            You can't have <code>/users/:id</code> and
+            <code>/users/:slug</code> coexist &mdash; the build rejects
+            it. Pick one name per node.</li>
+        <li><strong>Bindings are strings.</strong> No type coercion;
+            <code>_params.id</code> is the raw URL segment as captured.
+            Convert in your SQL or template as needed.</li>
+        <li><strong>Empty catch-alls don't match.</strong>
+            <code>/catchall/*rest</code> requires at least one segment
+            after <code>/catchall/</code>; bare <code>/catchall</code>
+            won't match. Add a literal sibling if you need that case.</li>
+    </ul>
+</div>
+
+<h2>Why it's fast</h2>
+<ul>
+    <li><strong>Depth is bounded.</strong> Real URLs have 3&ndash;5
+        segments. The trie's O(depth) is effectively O(1).</li>
+    <li><strong>Each step is one hash + one map probe.</strong> ~30 ns
+        per segment.</li>
+    <li><strong>Method check is a bitmask AND.</strong> One cycle.</li>
+    <li><strong>405 responses use a pre-baked head.</strong> No format,
+        no string allocation.</li>
+    <li><strong>Static and dynamic share the same path.</strong> One
+        flow, one branch predictor target, one mental model.</li>
+</ul>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/holes" class="prev"><small>Previous</small>Holes</a>
+    <a href="/concepts/middleware" class="next"><small>Next</small>Middleware &rarr;</a>
+</nav>
+{{ end }}

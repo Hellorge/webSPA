@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gogogo Studio | Control Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0c;
+            --sidebar: #111114;
+            --accent: #3b82f6;
+            --accent-glow: rgba(59, 130, 246, 0.3);
+            --text: #f1f1f1;
+            --text-dim: #94a3b8;
+            --glass: rgba(255, 255, 255, 0.03);
+            --border: rgba(255, 255, 255, 0.08);
+            --error: #ef4444;
+            --success: #10b981;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: 'Outfit', sans-serif; 
+            background: var(--bg); 
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Sidebar Navigation */
+        aside {
+            width: 260px;
+            background: var(--sidebar);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 48px;
+            letter-spacing: -0.5px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-box {
+            width: 32px;
+            height: 32px;
+            background: var(--accent);
+            border-radius: 8px;
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        nav { display: flex; flex-direction: column; gap: 8px; }
+        
+        .nav-item {
+            padding: 12px 16px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: var(--text-dim);
+            font-weight: 400;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .nav-item:hover { background: var(--glass); color: var(--text); }
+        .nav-item.active { 
+            background: var(--accent-glow); 
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        /* Main Workspace */
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: radial-gradient(circle at top right, #11111a, transparent);
+        }
+
+        header {
+            height: 72px;
+            padding: 0 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+            backdrop-filter: blur(10px);
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+            padding: 6px 12px;
+            border-radius: 20px;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .view-content {
+            flex: 1;
+            padding: 40px;
+            overflow-y: auto;
+        }
+
+        /* Grid Layouts */
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        .card {
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+        }
+
+        h2 { font-size: 20px; margin-bottom: 24px; font-weight: 600; }
+
+        /* Forms & Inputs */
+        textarea, input {
+            background: #000;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 12px;
+            border-radius: 8px;
+            width: 100%;
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 16px;
+        }
+
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        button:active { transform: scale(0.98); }
+
+        /* Specific Views */
+        .page-list { display: flex; flex-direction: column; gap: 8px; }
+        .page-item {
+            padding: 16px;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .page-item:hover { border-color: var(--accent); }
+
+        .metric-val { font-size: 32px; font-weight: 600; margin-top: 8px; }
+        .metric-label { font-size: 14px; color: var(--text-dim); }
+
+        pre { font-family: 'JetBrains Mono'; font-size: 12px; color: var(--accent); margin-top: 12px; }
+
+        /* Animation */
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <aside>
+        <div class="logo">
+            <div class="logo-box"></div>
+            GoGoGo
+        </div>
+        <nav>
+            <div class="nav-item active" onclick="showView('performance')">Performance</div>
+            <div class="nav-item" onclick="showView('explorer')">Explorer</div>
+            <div class="nav-item" onclick="showView('architect')">Architect</div>
+            <div class="nav-item" onclick="showView('settings')">Settings</div>
+        </nav>
+    </aside>
+
+    <main>
+        <header>
+            <div class="status-badge" id="server-status">Engine Online</div>
+            <div class="uptime" id="uptime">Uptime: 00:00:00</div>
+        </header>
+
+        <div id="performance" class="view-content fade-in">
+            <h2>Real-time Performance</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="metric-label">Total Requests</div>
+                    <div id="metric-requests" class="metric-val">0</div>
+                </div>
+                <div class="card">
+                    <div class="metric-label">Avg Latency</div>
+                    <div id="metric-latency" class="metric-val">0ms</div>
+                </div>
+                <div class="card">
+                    <div class="metric-label">Throughput (MiB/s)</div>
+                    <div id="metric-throughput" class="metric-val">0</div>
+                </div>
+                <div class="card">
+                    <div class="metric-label">Cache Hits</div>
+                    <div id="metric-cache" class="metric-val">0</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="explorer" class="view-content fade-in" style="display:none">
+            <h2>Page Explorer</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="metric-label">Pages Discovery</div>
+                    <div id="page-list" class="page-list" style="margin-top:16px"></div>
+                </div>
+                <div class="card">
+                    <div class="metric-label">Meta Editor (TOML)</div>
+                    <div id="editor-title" style="margin: 12px 0; font-weight: 600;">Select a page...</div>
+                    <textarea id="meta-editor" style="height: 300px;"></textarea>
+                    <button onclick="saveMeta()">Save Metadata</button>
+                    <div id="editor-msg"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="architect" class="view-content fade-in" style="display:none">
+            <h2>Database Architect</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="metric-label">Execute SQL</div>
+                    <textarea id="sql-input" style="height: 100px;" placeholder="SELECT * FROM news..."></textarea>
+                    <button onclick="runSQL()">Run Intelligence</button>
+                </div>
+                <div class="card">
+                    <div class="metric-label">Table Registry</div>
+                    <div id="table-list" class="page-list" style="margin-top:16px"></div>
+                </div>
+            </div>
+            <div class="card" style="margin-top: 24px; overflow-x: auto;">
+                <div class="metric-label">Results Grid</div>
+                <div id="results" style="margin-top: 16px;"></div>
+            </div>
+        </div>
+
+        <div id="settings" class="view-content fade-in" style="display:none">
+            <h2>Global Settings</h2>
+            <div class="card">
+                <div class="metric-label">Server Configuration (config.toml)</div>
+                <textarea id="config-editor" style="height: 400px; margin-top: 16px;"></textarea>
+                <button onclick="saveConfig()">Apply Configuration</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let currentAlias = 'home';
+
+        function showView(id) {
+            document.querySelectorAll('.view-content').forEach(v => v.style.display = 'none');
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            document.getElementById(id).style.display = 'block';
+            event.target.classList.add('active');
+            
+            if (id === 'explorer') loadPages();
+            if (id === 'architect') loadTables();
+            if (id === 'settings') loadConfig();
+        }
+
+        async function updateMetrics() {
+            const res = await fetch('/metrics');
+            const data = await res.json();
+            document.getElementById('metric-requests').innerText = data.total_requests.toLocaleString();
+            document.getElementById('metric-latency').innerText = (data.avg_latency / 1000000).toFixed(2) + 'ms';
+            document.getElementById('metric-throughput').innerText = data.throughput.toFixed(2);
+            document.getElementById('metric-cache').innerText = data.cache_hits;
+
+            const uptimeSec = Math.floor(data.uptime / 1000000000);
+            const h = Math.floor(uptimeSec / 3600).toString().padStart(2, '0');
+            const m = Math.floor((uptimeSec % 3600) / 60).toString().padStart(2, '0');
+            const s = (uptimeSec % 60).toString().padStart(2, '0');
+            document.getElementById('uptime').innerText = `Uptime: ${h}:${m}:${s}`;
+        }
+
+        async function loadPages() {
+            const res = await fetch('/pages');
+            const pages = await res.json();
+            const list = document.getElementById('page-list');
+            list.innerHTML = pages.map(p => `<div class="page-item" onclick="loadMeta('${p}')">/${p}</div>`).join('');
+        }
+
+        async function loadMeta(alias) {
+            currentAlias = alias;
+            document.getElementById('editor-title').innerText = `Editing: /${alias}/meta.toml`;
+            const res = await fetch(`/meta?alias=${alias}`);
+            const text = await res.text();
+            document.getElementById('meta-editor').value = text;
+        }
+
+        async function saveMeta() {
+            const text = document.getElementById('meta-editor').value;
+            await fetch(`/meta?alias=${currentAlias}`, {
+                method: 'POST',
+                body: text
+            });
+            document.getElementById('editor-msg').innerText = 'Metadata Saved Successfully';
+            setTimeout(() => document.getElementById('editor-msg').innerText = '', 2000);
+        }
+
+        async function loadConfig() {
+            const res = await fetch('/config');
+            const text = await res.text();
+            document.getElementById('config-editor').value = text;
+        }
+
+        async function saveConfig() {
+            const text = document.getElementById('config-editor').value;
+            await fetch('/config', { method: 'POST', body: text });
+            alert('Configuration applied. Reboot server to take full effect.');
+        }
+
+        async function loadTables() {
+            const res = await fetch('/tables');
+            const tables = await res.json();
+            document.getElementById('table-list').innerHTML = tables.map(t => `<div class="page-item" onclick="runSQLQuick('${t}')">${t}</div>`).join('');
+        }
+
+        async function runSQLQuick(table) {
+            document.getElementById('sql-input').value = `SELECT * FROM ${table} LIMIT 10`;
+            runSQL();
+        }
+
+        async function runSQL() {
+            const sql = document.getElementById('sql-input').value;
+            const res = await fetch('/sql', {
+                method: 'POST',
+                body: JSON.stringify({ sql })
+            });
+            const data = await res.json();
+            renderTable(data);
+        }
+
+        function renderTable(data) {
+            if (data.error) {
+                document.getElementById('results').innerHTML = `<div style="color:red">${data.error}</div>`;
+                return;
+            }
+            let html = '<table style="width:100%; border-collapse:collapse; font-size:14px;"><thead><tr>';
+            data.columns.forEach(c => html += `<th style="text-align:left; border-bottom:1px solid var(--border); padding:8px; color:var(--text-dim);">${c}</th>`);
+            html += '</tr></thead><tbody>';
+            data.rows.forEach(r => {
+                html += '<tr>';
+                data.columns.forEach(c => html += `<td style="padding:8px; border-bottom:1px solid var(--glass);">${r[c]}</td>`);
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            document.getElementById('results').innerHTML = html;
+        }
+
+        setInterval(updateMetrics, 1000);
+        updateMetrics();
+    </script>
+</body>
+</html>

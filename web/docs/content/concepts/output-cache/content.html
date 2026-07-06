@@ -1,0 +1,174 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>Output cache — Gogogo concepts</title>
+<meta name="description" content="Rendered hole-page output cache: stores final HTML + brotli + gzip per page, invalidated by fastdb table-write notifications.">
+{{ end }}
+
+{{ define "content" }}
+<h1>Output cache</h1>
+<p class="lede">
+    The fastdb row cache eliminates the SQL cost on hole pages. The
+    output cache eliminates the rendering cost too. It stores the
+    fully-assembled page bytes &mdash; envelope spliced with hole
+    output, optionally brotli/gzip pre-encoded &mdash; ready for
+    <code>writev</code>. Hits skip SQL, template execution, splice, and
+    compression.
+</p>
+
+<h2>What's cached</h2>
+<p>
+    One <strong>outputEntry</strong> per
+    (<code>manifest</code>, <code>holeOffset</code>) pair. Each entry
+    holds three encoded variants:
+</p>
+<pre><code><span class="kw">type</span> outputEntry <span class="kw">struct</span> {
+    variants [<span class="num">3</span>]variantBody  <span class="com">// indexed by encoding: identity, gzip, brotli</span>
+    tables   []<span class="ty">string</span>      <span class="com">// the SQL tables this page reads from (for invalidation)</span>
+}
+
+<span class="kw">type</span> variantBody <span class="kw">struct</span> {
+    body []<span class="ty">byte</span>
+    head <span class="ty">uint16</span>   <span class="com">// pre-registered HTTP response head with Content-Encoding baked</span>
+}</code></pre>
+<p>
+    The shape mirrors <code>RouteEntry.Variants[3]</code> on the static
+    side. Encoding is an array index, lookup is one deref, no search.
+    Same model for cached and built-in static; same code path picks
+    the variant.
+</p>
+
+<h2>Lifecycle of one request</h2>
+<ol>
+    <li>Trie matches the URL &rarr; routing entry.</li>
+    <li>Action is <code>ActionStatic</code> with a non-zero
+        <code>HoleOffset</code> &rarr; output cache lookup.</li>
+    <li><strong>Hit:</strong> pick variant by <code>Accept-Encoding</code>,
+        set <code>resp.HeadID</code>, slice the body. Done. Zero render
+        work.</li>
+    <li><strong>Miss:</strong>
+        <ol>
+            <li>Compose the identity body via
+                <code>composeHoleBody</code> &mdash; envelope + SQL +
+                per-row template + splice.</li>
+            <li>Compute <code>compress.Brotli(body)</code> and
+                <code>compress.Gzip(body)</code>.</li>
+            <li>Compute the union of all holes' table sets.</li>
+            <li>Store the three-variant entry under the holeKey;
+                register the entry in
+                <code>reverse[table]&rarr;set[holeKey]</code> for each
+                referenced table.</li>
+            <li>Pick variant and serve.</li>
+        </ol>
+    </li>
+</ol>
+
+<h2>Invalidation</h2>
+<p>
+    The output cache subscribes to fastdb at startup:
+</p>
+<pre><code>st.outputCacheSub = fastdb.<span class="fn">Subscribe</span>(st.outputCache.<span class="fn">Invalidate</span>)</code></pre>
+<p>
+    When fastdb sees a write &mdash; via <code>sqlite3_update_hook</code>
+    on a pool connection or via <code>data_version</code> bump &mdash;
+    it fans out to subscribers. The output cache:
+</p>
+<ul>
+    <li><strong>For a named table:</strong> walks
+        <code>reverse[table]</code>, drops every entry that references
+        it, and cleans the table's reverse-index slot.</li>
+    <li><strong>For <code>table == ""</code></strong> (external write
+        detected by <code>data_version</code>): flushes everything.</li>
+</ul>
+<p>
+    Next request for an invalidated page misses and re-populates from
+    fresh data. Invalidation is O(entries-touching-this-table), not
+    O(cache-size).
+</p>
+
+<h2>What's not cached, and why</h2>
+<div class="callout">
+    <ul>
+        <li><strong>Pages whose SQL is too complex to attribute.</strong>
+            If any hole's SQL is a CTE, subquery in FROM, or uses
+            quoted identifiers we can't extract from, the page is
+            marked uncacheable &mdash; we can't know which write
+            should invalidate it.</li>
+        <li><strong>Routes with no holes.</strong> Pages that are
+            pure-static don't need the output cache; their compressed
+            variants are baked into the manifest at build time and
+            served from mmap directly.</li>
+        <li><strong>One-shot dynamic URLs.</strong> Routes with
+            params/catch-all DO cache (key includes bindings hash),
+            but unique-each-time URLs (per-session UUIDs, ad
+            tracking IDs) churn the LRU and effectively never hit.
+            That's the same "no cache" outcome as bypass would give,
+            without needing a special code path.</li>
+    </ul>
+</div>
+
+<h2>Bounded growth</h2>
+<p>
+    Dynamic routes create one cache entry per distinct (route,
+    bindings) pair. Without bounds, a high-cardinality URL space
+    (e.g. <code>/users/:id</code> with 10M users) would fill memory.
+    The cache caps at <strong>4096 entries</strong> or
+    <strong>32 MiB</strong> (whichever hits first), with LRU
+    eviction.
+</p>
+<ul>
+    <li>Hot URLs stay cached (LRU promotes on hit).</li>
+    <li>Cold URLs get evicted (LRU evicts from tail).</li>
+    <li>Static URLs (no bindings) all share the
+        <code>params == 0</code> slot &mdash; one entry per page,
+        same as before.</li>
+</ul>
+
+<h2>Why this layer earns its place</h2>
+<p>
+    Before output caching, hole pages did SQL + per-row template +
+    splice on every request. With output caching, that work runs once
+    per write event instead of once per read. Read-heavy workloads see
+    hole pages serve at near static-page QPS. Write-heavy pages
+    degrade gracefully through fastdb's per-table bypass &mdash; if a
+    table thrashes invalidations, the output cache stops caching pages
+    that touch it, and they fall back to the row-cached render path.
+</p>
+
+<h2>Layering</h2>
+<p>The three caches that compose for hole pages:</p>
+<table>
+    <thead>
+        <tr><th>Layer</th><th>What it caches</th><th>Invalidated by</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>Output cache</td>
+            <td>Full rendered + compressed HTML per page</td>
+            <td>Write to any table the page reads</td>
+        </tr>
+        <tr>
+            <td>fastdb row cache</td>
+            <td>Materialised SQL rows per query</td>
+            <td>Write to the query's tables</td>
+        </tr>
+        <tr>
+            <td>Template parse cache</td>
+            <td>Parsed <code>text/template</code> per hole body</td>
+            <td>Manifest reload (SIGHUP)</td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    Each layer is independent &mdash; output cache misses fall through
+    to row cache, which falls through to SQLite. All three share one
+    invalidation signal: fastdb's write events.
+</p>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/fastdb" class="prev"><small>Previous</small>fastdb</a>
+    <a href="/concepts/gogohttp" class="next"><small>Next</small>gogohttp &rarr;</a>
+</nav>
+{{ end }}

@@ -1,7 +1,7 @@
 # Server configuration
 [server]
-port = 8080
-host = "localhost"
+port = 8082
+host = "0.0.0.0"
 production_mode = true
 spa_mode = true
 metrics_enabled = true
@@ -58,3 +58,15 @@ ignore_file = ".buildignore"
 
 # File reading
 base_dir = ""
+
+# Sites — each maps a directory under web/<name>/ to one or more Host
+# headers. Hosts listed as "*" make a site the default fallback when no
+# other host matches.
+[[site]]
+name = "main"
+hosts = ["*"]
+
+[[site]]
+name = "docs"
+hosts = ["docs.localhost"]
+

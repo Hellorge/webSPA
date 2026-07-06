@@ -131,7 +131,7 @@ func (m *MetricsUI) fetchSnapshot() (*metrics.Snapshot, error) {
 }
 
 func (m *MetricsUI) updateCharts(snapshot *metrics.Snapshot) {
-	cpuUsage := snapshot.AvgLatency.Seconds() * 1000 // ms
+	cpuUsage := float64(snapshot.AvgLatency) / 1000000.0 // ms
 	memUsage := float64(snapshot.TotalBytes) / (1024 * 1024)
 	reqRate := snapshot.Throughput // MiB/s
 
@@ -159,7 +159,7 @@ func (m *MetricsUI) updateGauges(snapshot *metrics.Snapshot) {
 	m.gauges[1].Percent = int(snapshot.ActiveRequests)           // Active requests
 	if m.gauges[1].Percent > 100 { m.gauges[1].Percent = 100 }
 
-	m.gauges[2].Percent = int(snapshot.AvgLatency.Seconds() * 100) // 1s = 100%
+	m.gauges[2].Percent = int(snapshot.AvgLatency / 1000000000) // 1s = 100%
 	if m.gauges[2].Percent > 100 { m.gauges[2].Percent = 100 }
 }
 
@@ -168,7 +168,7 @@ func (m *MetricsUI) updateRequestList(snapshot *metrics.Snapshot) {
 		fmt.Sprintf("Total Requests: %d", snapshot.TotalRequests),
 		fmt.Sprintf("Active Requests: %d", snapshot.ActiveRequests),
 		fmt.Sprintf("Total Bytes:    %d", snapshot.TotalBytes),
-		fmt.Sprintf("Avg Latency:    %v", snapshot.AvgLatency),
+		fmt.Sprintf("Avg Latency:    %v ms", float64(snapshot.AvgLatency)/1000000.0),
 		fmt.Sprintf("Throughput:     %.2f MiB/s", snapshot.Throughput),
 	}
 }
@@ -176,7 +176,7 @@ func (m *MetricsUI) updateRequestList(snapshot *metrics.Snapshot) {
 func (m *MetricsUI) updateSummary(snapshot *metrics.Snapshot) {
 	m.summaryText.Text = fmt.Sprintf(
 		"ADDR: localhost:8080 | UPTIME: %v\nREQUESTS: %d | ACTIVE_THREADS: %d | FLOW: %.2f MiB/s",
-		snapshot.Uptime.Round(time.Second),
+		time.Duration(snapshot.Uptime).Round(time.Second),
 		snapshot.TotalRequests,
 		snapshot.ActiveRequests,
 		snapshot.Throughput,

@@ -32,9 +32,8 @@ func (ctx *BuildContext) watchFiles() error {
     }
 
     // Add directories to watch
-    for _, dir := range toBuildDir {
-        fullDir := filepath.Join(ctx.config.Directories.Web, dir)
-        if err := filepath.Walk(fullDir, func(path string, info os.FileInfo, err error) error {
+    for _, dir := range ctx.toBuildDir {
+        if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
             if err != nil {
                 return err
             }
@@ -109,8 +108,9 @@ func (w *Watcher) processChange(path string) error {
         return nil
     }
 
-    // Get relative path
-    relPath, err := filepath.Rel(w.ctx.config.Directories.Web, path)
+    // Get relative path: Symmetric Zero-Slash Anchor
+    contentDir, _ := filepath.Abs(filepath.Join(w.ctx.config.Directories.Web, w.ctx.config.Directories.Content))
+    relPath, err := filepath.Rel(contentDir, path)
     if err != nil {
         return err
     }
@@ -156,10 +156,9 @@ func (w *Watcher) handleDelete(path string) error {
         return err
     }
 
-    // Clean up caches
-    if entry, ok := w.ctx.cache.Get(relPath); ok {
-        os.Remove(entry.FileInfo.DistPath)
-    }
+    // No DistPath cleanup — we no longer write to dist/. The manifest is
+    // rebuilt from the in-memory cache after the next save cycle.
+    _ = relPath
 
     // Process dependents
     deps := w.ctx.depGraph.GetDependents(relPath)

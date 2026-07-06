@@ -1,0 +1,31 @@
+{% extends "def" %}
+{% alias "/" %}
+
+{{ define "head" }}
+<title>G0G0G0 | Absolute Performance</title>
+<meta name="description" content="Pre-rendered Dynamic Engine">
+{{ end }}
+
+{{ define "content" }}
+<header class="grand-header">
+    <h1>Welcome to the Absolute Edge.</h1>
+</header>
+
+<div class="main-content">
+    <h1>Welcome</h1>
+    <p>GoGoGo is reaching Absolute Performance levels.</p>
+</div>
+
+<section class="news-intelligence">
+    <h2 class="section-title">Latest Intelligence</h2>
+    <div class="news-grid">
+        {% hole "SELECT title, summary, date FROM news ORDER BY date DESC" %}
+        <article class="news-item">
+            <h3>{{ .title }}</h3>
+            <p>{{ .summary }}</p>
+            <time>{{ .date }}</time>
+        </article>
+        {% endhole %}
+    </div>
+</section>
+{{ end }}

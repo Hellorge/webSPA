@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/gob"
 	"fmt"
 	"log"
 	"os"
@@ -12,25 +10,29 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gogogo/modules/build"
 	"gogogo/modules/config"
-	"gogogo/modules/filemanager"
-	"gogogo/modules/router"
-	"gogogo/modules/templates"
-	"gogogo/modules/fileaccess"
-
-	"github.com/BurntSushi/toml"
 )
 
+// BuildContext is per-site. cmd/build/main.go constructs one BuildContext
+// per [[site]] entry in config and runs each in turn. Per-site state means
+// per-site renderer (different templates root), per-site cache (so an edit
+// in web/docs doesn't invalidate web/main), and per-site manifest output.
 type BuildContext struct {
-	config      *config.Config
+	config       *config.Config
+	site         config.Site
+	siteRoot     string // web/<site.Name>, absolute
+	distRoot     string // dist/<site.Name> (or ctx.outputDir/<site.Name> if overridden)
+	cachePath    string // meta/<site.Name>_cache.json
+	manifestPath string // meta/<site.Name>_router.bin
+
 	concurrency int
 	cache       *Cache
 	depGraph    *DependencyGraph
-	bufferPool  *BufferPool
 	workerpool  *WorkerPool
-	minifier       *MinificationWorker
-	templateEngine templates.TemplateEngine
-	errors         *ErrorCollector
+	minifier    *MinificationWorker
+	renderer    *build.PageRenderer
+	errors      *ErrorCollector
 	aliasMap    map[string]string
 	usedAliases map[string]string
 	force       bool
@@ -39,6 +41,7 @@ type BuildContext struct {
 	stats       bool
 	outputDir   string
 	buildStats  *BuildStats
+	toBuildDir  []string
 }
 
 type BuildStats struct {
@@ -52,61 +55,65 @@ type BuildStats struct {
 	MinifiedSize   int64
 }
 
-type MetaData struct {
-	Alias string `toml:"alias"`
-}
 
 func (ctx *BuildContext) initialize() error {
-	// Initialize components
-
-	ctx.buildStats = &BuildStats{
-		StartTime: time.Now(),
-	}
+	ctx.buildStats = &BuildStats{StartTime: time.Now()}
 	ctx.aliasMap = make(map[string]string)
 	ctx.usedAliases = make(map[string]string)
 
+	siteRoot, err := filepath.Abs(filepath.Join(ctx.config.Directories.Web, ctx.site.Name))
+	if err != nil {
+		return fmt.Errorf("resolve siteRoot for %q: %w", ctx.site.Name, err)
+	}
+	ctx.siteRoot = siteRoot
+
+	distBase := ctx.outputDir
+	if distBase == "" {
+		distBase = ctx.config.Directories.Dist
+	}
+	ctx.distRoot = filepath.Join(distBase, ctx.site.Name)
+	ctx.cachePath = filepath.Join(ctx.config.Directories.Meta, ctx.site.Name+"_cache.json")
+	ctx.manifestPath = filepath.Join(ctx.config.Directories.Meta, ctx.site.Name+"_router.bin")
+
+	templatesDir := filepath.Join(ctx.siteRoot, ctx.config.Directories.Templates)
+
 	ctx.workerpool = NewWorkerPool(ctx.concurrency, ctx)
-	ctx.minifier = NewMinificationWorker()
 	ctx.cache = NewCache()
 	ctx.depGraph = NewDependencyGraph()
-	ctx.bufferPool = NewBufferPool(defaultBufferSize)
 	ctx.errors = NewErrorCollector()
-
-	// Initialize file manager for templates to use
-	fa := fileaccess.New()
-	fm := filemanager.New(fa, nil, nil, filemanager.Config{
-		RootDir: ctx.config.Directories.Web,
-	})
-	templateDir := filepath.Join(ctx.config.Directories.Web, ctx.config.Directories.Templates)
-	ctx.templateEngine = templates.New(fm, templateDir, ctx.config.Templates.Main, true) // Always production mode for builder
+	ctx.minifier = NewMinificationWorker()
+	ctx.renderer = build.NewPageRenderer(templatesDir)
 
 	if ctx.dryRun {
 		log.Println("DRY RUN - no files will be written")
 	}
 
+	contentDir := filepath.Join(ctx.siteRoot, ctx.config.Directories.Content)
+	staticDir := filepath.Join(ctx.siteRoot, ctx.config.Directories.Static)
+
 	if ctx.target != "" {
-		targetPath := filepath.Join(ctx.config.Directories.Web, ctx.target)
+		targetPath := filepath.Join(contentDir, ctx.target)
 		if _, err := os.Stat(targetPath); err != nil {
 			return fmt.Errorf("target directory not found: %s", targetPath)
 		}
-		// Override toBuildDir with just the target
-		toBuildDir = []string{targetPath}
-		log.Printf("Building target directory: %s", ctx.target)
+		ctx.toBuildDir = []string{targetPath}
+		log.Printf("[%s] Building target directory: %s", ctx.site.Name, ctx.target)
 	} else {
-		entries, err := os.ReadDir(ctx.config.Directories.Web)
-		if err != nil {
-			log.Fatalf("failed to load read web directory: %w", err)
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				toBuildDir = append(toBuildDir, filepath.Join(ctx.config.Directories.Web, entry.Name()))
+		// Content tree (each top-level dir under content/ is a "page family").
+		if entries, err := os.ReadDir(contentDir); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					ctx.toBuildDir = append(ctx.toBuildDir, filepath.Join(contentDir, entry.Name()))
+				}
 			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("[%s] read content dir: %w", ctx.site.Name, err)
 		}
-	}
 
-	if ctx.outputDir == "" {
-		ctx.outputDir = ctx.config.Directories.Dist
+		// Static assets.
+		if _, err := os.Stat(staticDir); err == nil {
+			ctx.toBuildDir = append(ctx.toBuildDir, staticDir)
+		}
 	}
 
 	if ctx.concurrency <= 0 {
@@ -116,20 +123,17 @@ func (ctx *BuildContext) initialize() error {
 		log.Printf("Concurency set to %d", ctx.concurrency)
 	}
 
-	// Load cache
-	buildCachePath = filepath.Join(ctx.config.Directories.Meta, "build_cache.json")
-	if err := ctx.cache.Load(buildCachePath); err != nil {
-		return fmt.Errorf("failed to load cache: %w", err)
+	if err := ctx.cache.Load(ctx.cachePath); err != nil {
+		return fmt.Errorf("[%s] load cache: %w", ctx.site.Name, err)
 	}
 
 	return nil
 }
 
 func (ctx *BuildContext) build() error {
-	log.Println("Starting build process...")
+	log.Printf("[%s] Starting build...", ctx.site.Name)
 
-	// Count total files first
-	for _, dir := range toBuildDir {
+	for _, dir := range ctx.toBuildDir {
 		filepath.Walk(dir,
 			func(_ string, info os.FileInfo, _ error) error {
 				if info != nil && !info.IsDir() {
@@ -139,25 +143,21 @@ func (ctx *BuildContext) build() error {
 			})
 	}
 
-	// Process directories
-	for _, dir := range toBuildDir {
+	for _, dir := range ctx.toBuildDir {
 		if err := ctx.processDirectory(dir); err != nil {
 			return err
 		}
 	}
 
 	if !ctx.dryRun {
-		// Wait for completion
 		if err := ctx.workerpool.Wait(); err != nil {
 			return err
 		}
 
-		// Build router binary
 		if err := ctx.buildRouterBinary(); err != nil {
 			return err
 		}
 
-		// Save caches
 		if err := ctx.saveAllCaches(); err != nil {
 			return err
 		}
@@ -177,72 +177,100 @@ func (ctx *BuildContext) build() error {
 }
 
 func (ctx *BuildContext) saveAllCaches() error {
-	return ctx.cache.Save(buildCachePath)
+	return ctx.cache.Save(ctx.cachePath)
 }
 
-func (ctx *BuildContext) getAliasedPath(path string) string {
-	if path == "." || path == "" || path == "/" {
-		return path
+// urlForRelPath computes the public URL for a build-tree relPath
+// (relative to siteRoot). Rules, applied in order:
+//
+//   1. Files outside content/ (e.g. static/app.js) keep their relPath
+//      as the URL — no alias logic applies.
+//   2. Strip the content/ prefix (build-tree convention, not URL).
+//   3. Strip the canonical content.html filename.
+//   4. For each remaining segment, look up its aliasMap entry. An alias
+//      of "/" drops that segment (root mapping — used by site landing
+//      pages). An alias of "X" replaces the segment with X. No alias =
+//      keep.
+func (ctx *BuildContext) urlForRelPath(relPath string) string {
+	s := filepath.ToSlash(relPath)
+	if !strings.HasPrefix(s, "content/") {
+		return strings.TrimPrefix(s, "/")
+	}
+	s = strings.TrimPrefix(s, "content/")
+	s = strings.TrimSuffix(s, "/content.html")
+	s = strings.TrimSuffix(s, "content.html")
+	s = strings.Trim(s, "/")
+	if s == "" {
+		return ""
 	}
 
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	// Use the alias if it exists
-	if alias, exists := ctx.aliasMap[path]; exists {
-		if alias == "/" {
-			return ctx.getAliasedPath(dir)
+	segments := strings.Split(s, "/")
+	var out []string
+	accum := "content"
+	for _, seg := range segments {
+		accum = accum + "/" + seg
+		if alias, ok := ctx.aliasMap[accum]; ok {
+			if alias == "/" {
+				continue
+			}
+			out = append(out, alias)
+		} else {
+			out = append(out, seg)
 		}
-		base = alias
 	}
-
-	parentPath := ctx.getAliasedPath(dir)
-	if parentPath == "." || parentPath == "/" || parentPath == "" {
-		return base
-	}
-
-	return filepath.Join(parentPath, base)
+	return strings.Join(out, "/")
 }
 
+// processAlias discovers a directory's URL alias. The alias controls how
+// urlForRelPath transforms the directory's segment when building the
+// final URL.
+//
+// Discovery is two-step:
+//   1. If the dir contains a content.html, byte-scan its first 1 KiB for
+//      a {% alias "X" %} tag (build.ScanAlias). If found, that's the
+//      alias.
+//   2. Otherwise no alias is registered — urlForRelPath falls back to
+//      the directory name verbatim.
+//
+// No more meta.toml. Page metadata lives inside content.html.
 func (ctx *BuildContext) processAlias(path string) error {
-	metaPath := filepath.Join(path, "meta.toml")
-	relPath, err := filepath.Rel(ctx.config.Directories.Web, path)
+	relPath, err := filepath.Rel(ctx.siteRoot, path)
 	if err != nil {
 		return fmt.Errorf("error calculating relative path for %s: %w", path, err)
 	}
 
-	if _, err := os.Stat(metaPath); err == nil {
-		data, err := os.ReadFile(metaPath)
-		if err != nil {
-			return fmt.Errorf("error reading meta.toml at %s: %w", path, err)
-		}
-
-		meta := &MetaData{}
-		if err := toml.Unmarshal(data, meta); err != nil {
-			return fmt.Errorf("error parsing meta.toml at %s: %w", path, err)
-		}
-
-		if meta.Alias != "" {
-			if strings.ContainsAny(meta.Alias, "<>:\"\\|?*") {
-				return fmt.Errorf("invalid characters in alias for path %q: %q", relPath, meta.Alias)
-			}
-
-			if len(meta.Alias) > 100 {
-				return fmt.Errorf("alias too long for path %q: %q (max 100 characters)", relPath, meta.Alias)
-			}
-
-			if existing, exists := ctx.usedAliases[meta.Alias]; exists {
-				return fmt.Errorf("duplicate alias detected:\n"+
-					"  Alias: %s\n"+
-					"  Path: %s\n"+
-					"  Conflicts with: %s\n",
-					meta.Alias, relPath, existing)
-			}
-
-			ctx.aliasMap[relPath] = meta.Alias
-			ctx.usedAliases[meta.Alias] = relPath
-		}
+	contentPath := filepath.Join(path, "content.html")
+	src, err := os.ReadFile(contentPath)
+	if err != nil {
+		// No content.html in this directory — nothing to scan. Walking
+		// continues into subdirs; their content.html will be handled then.
+		return nil
 	}
+
+	alias := build.ScanAlias(src)
+	if alias == "" {
+		return nil
+	}
+
+	// `:` and `*` are trie pattern markers (`/users/:id`, `/static/*path`)
+	// — legitimate in an alias, not filesystem-unsafe. Keep blocking
+	// characters that would break URL parsing or filesystem operations.
+	if strings.ContainsAny(alias, "<>\"\\|?") {
+		return fmt.Errorf("invalid characters in alias for path %q: %q", relPath, alias)
+	}
+	if len(alias) > 100 {
+		return fmt.Errorf("alias too long for path %q: %q (max 100 characters)", relPath, alias)
+	}
+	if existing, exists := ctx.usedAliases[alias]; exists {
+		return fmt.Errorf("duplicate alias detected:\n"+
+			"  Alias: %s\n"+
+			"  Path: %s\n"+
+			"  Conflicts with: %s\n",
+			alias, relPath, existing)
+	}
+
+	ctx.aliasMap[relPath] = alias
+	ctx.usedAliases[alias] = relPath
 	return nil
 }
 
@@ -262,22 +290,21 @@ func (ctx *BuildContext) processDirectory(dir string) error {
 			return nil
 		}
 
-		relPath, err := filepath.Rel(ctx.config.Directories.Web, path)
+		relPath, err := filepath.Rel(ctx.siteRoot, path)
 		if err != nil {
 			ctx.errors.Add(fmt.Errorf("error calculating relative path for %s: %w", path, err))
 			return nil
 		}
 
 		if ctx.shouldProcess(relPath, info) {
-			aliasedPath := ctx.getAliasedPath(relPath)
+			aliasedPath := ctx.urlForRelPath(relPath)
 
 			if ctx.dryRun {
-				log.Printf("Would build: %s -> %s", relPath, aliasedPath)
+				log.Printf("[%s] Would build: %s -> %s", ctx.site.Name, relPath, aliasedPath)
 				atomic.AddInt32(&ctx.buildStats.ProcessedFiles, 1)
 				return nil
 			}
 
-			// Track file sizes for stats if needed
 			if ctx.stats {
 				atomic.AddInt64(&ctx.buildStats.TotalSize, info.Size())
 			}
@@ -291,7 +318,7 @@ func (ctx *BuildContext) processDirectory(dir string) error {
 			atomic.AddInt32(&ctx.buildStats.ProcessedFiles, 1)
 
 			if ctx.buildStats.ProcessedFiles%10 == 0 {
-				log.Printf("Progress: %d/%d files processed",
+				log.Printf("[%s] Progress: %d/%d", ctx.site.Name,
 					ctx.buildStats.ProcessedFiles, ctx.buildStats.TotalFiles)
 			}
 		} else {
@@ -321,78 +348,27 @@ func (ctx *BuildContext) shouldProcess(relPath string, info os.FileInfo) bool {
 }
 
 func (ctx *BuildContext) buildRouterBinary() error {
-	root := &router.RadixNode{
-		Children: make(map[string]*router.RadixNode),
-	}
+	results := make(map[string]ProcessResult)
+	allEntries := ctx.cache.GetAll()
 
-	cacheEntries := ctx.cache.GetAll()
-	for cacheKey, entry := range cacheEntries {
-		// 1. Determine key to use (AliasedPath or raw cache key/RelPath)
-		routePath := entry.FileInfo.AliasedPath
-		if routePath == "" {
-			routePath = cacheKey
-		}
-
-		trimmedAlias := strings.Trim(routePath, "/")
-		var aliasSegments []string
-		if trimmedAlias != "" {
-			aliasSegments = strings.Split(trimmedAlias, "/")
-		}
-		root.Insert(aliasSegments, &entry.FileInfo)
-
-		// 2. Special case: if it's content.html, also map the directory itself
-		// This logic needs to be mindful of what 'routePath' is now.
-		// If routePath is "/large", it ends in "large".
-		// If routePath IS "content/large/content.html", it ends in "content.html".
-		
-		if strings.HasSuffix(trimmedAlias, "content.html") {
-			dirPath := strings.TrimSuffix(trimmedAlias, "content.html")
-			dirPath = strings.TrimSuffix(dirPath, "/")
-			var dirSegments []string
-			if dirPath != "" {
-				dirSegments = strings.Split(dirPath, "/")
-			}
-			root.Insert(dirSegments, &entry.FileInfo)
-		}
-
-		// 3. Insert original logical path (internal reference)
-		// Only if it differs from the primary route we just inserted
-		trimmedRel := strings.Trim(entry.RelPath, "/")
-		if trimmedRel != trimmedAlias { 
-			var relSegments []string
-			if trimmedRel != "" {
-				relSegments = strings.Split(trimmedRel, "/")
-			}
-			root.Insert(relSegments, &entry.FileInfo)
+	for path, entry := range allEntries {
+		results[path] = ProcessResult{
+			FileInfo: entry.FileInfo,
+			Holes:    entry.Holes,
+			FilePath: entry.FilePath,
 		}
 	}
 
-	// Create meta directory if needed
-	if err := os.MkdirAll(ctx.config.Directories.Meta, 0755); err != nil {
-		return err
-	}
-
-	buf := ctx.bufferPool.Get()
-	defer ctx.bufferPool.Put(buf)
-
-	buffer := bytes.NewBuffer(buf)
-	buffer.Grow(1 << 20)
-
-	if err := gob.NewEncoder(buffer).Encode(root); err != nil {
-		return err
-	}
-
-	return atomicWrite(
-		filepath.Join(ctx.config.Directories.Meta, "router_binary.bin"),
-		buffer.Bytes(),
-	)
+	compiler := NewV2Compiler()
+	compiler.SiteName = ctx.site.Name
+	return compiler.Compile(results, ctx.manifestPath)
 }
 
 func (ctx *BuildContext) printBuildStats() {
 	duration := ctx.buildStats.EndTime.Sub(ctx.buildStats.StartTime)
 	filesPerSec := float64(ctx.buildStats.ProcessedFiles) / duration.Seconds()
 
-	fmt.Printf("\nBuild Statistics:\n")
+	fmt.Printf("\nBuild Statistics [%s]:\n", ctx.site.Name)
 	fmt.Printf("================\n")
 	fmt.Printf("Duration: %v\n", duration)
 	fmt.Printf("Total Files: %d\n", ctx.buildStats.TotalFiles)
@@ -409,7 +385,5 @@ func (ctx *BuildContext) printBuildStats() {
 	if ctx.target != "" {
 		fmt.Printf("Target Directory: %s\n", ctx.target)
 	}
-	if ctx.outputDir != "" {
-		fmt.Printf("Output Directory: %s\n", ctx.outputDir)
-	}
+	fmt.Printf("Output: %s\n", ctx.manifestPath)
 }

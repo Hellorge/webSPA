@@ -1,0 +1,161 @@
+{% extends "def" %}
+{% alias "/" %}
+
+{{ define "head" }}
+<title>Gogogo — Pre-rendered. Pre-compressed. Pre-routed.</title>
+<meta name="description" content="An HTTP/1.1 engine where the build does the work so the runtime can stay dumb-fast.">
+{{ end }}
+
+{{ define "layout" }}
+<main class="landing">
+
+    <section class="hero">
+        <div class="hero-inner">
+            <div class="hero-eyebrow"><span class="dot"></span> Live engine — served from a single binary</div>
+
+            <h1>
+                Build does the work.<br />
+                <span class="grad">Runtime stays dumb-fast.</span>
+            </h1>
+
+            <p class="hero-tag">
+                Gogogo is an HTTP engine where every page, every asset, every
+                dispatch is decided at build time. Hashing. Compression. Templates.
+                Routes. The server's job is to find the bytes and write them.
+            </p>
+
+            <div class="hero-cta">
+                <a href="/quickstart" class="btn btn-primary">
+                    Quickstart <span class="arrow">→</span>
+                </a>
+                <a href="/concepts/holes" class="btn">
+                    Read the concepts <span class="arrow">→</span>
+                </a>
+            </div>
+
+            <div class="hero-stats">
+                <div class="hero-stat">
+                    <span class="label">Cold dispatch</span>
+                    <span class="value"><strong>0 ms</strong> &nbsp;trie walk, O(depth)</span>
+                </div>
+                <div class="hero-stat">
+                    <span class="label">Wire size</span>
+                    <span class="value"><strong>74%</strong> &nbsp;saved via baked brotli</span>
+                </div>
+                <div class="hero-stat">
+                    <span class="label">Live data this request</span>
+                    <span class="value"><strong>{% hole "SELECT COUNT(*) AS n FROM news" %}{{ .n }}{% endhole %}</strong> &nbsp;rows spliced into a baked envelope</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="features">
+        <div class="features-head">
+            <span class="eyebrow">What's inside</span>
+            <h2>Four ideas, doing all the heavy lifting.</h2>
+            <p>
+                Gogogo isn't a framework. It's a small set of decisions that move
+                work from request time to build time — and then commits to the
+                consequences.
+            </p>
+        </div>
+
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="icon"><svg viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h12" stroke-linecap="round" /></svg></div>
+                <h3>Trie routing</h3>
+                <p>
+                    Per-segment trie with <code>:id</code> params and
+                    <code>*path</code> catch-all. Lookup is O(depth) &mdash;
+                    bounded by URL structure, not route count. Static and
+                    dynamic sit in one universal flow.
+                </p>
+            </div>
+            <div class="feature-card">
+                <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" stroke-linecap="round" /></svg></div>
+                <h3>Holes</h3>
+                <p>
+                    Mark live-data spots in HTML. Build pre-extracts the body.
+                    Runtime splices SQL rows in. The envelope never re-renders.
+                </p>
+            </div>
+            <div class="feature-card">
+                <div class="icon"><svg viewBox="0 0 24 24"><path d="M21 15V8a2 2 0 00-1-1.7l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.7l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /><path d="M3.3 7l8.7 5 8.7-5" /></svg></div>
+                <h3>ActionFile</h3>
+                <p>
+                    Files past a size threshold skip the manifest and serve via
+                    <code>sendfile(2)</code>. Range requests built in. Bytes
+                    go kernel&rarr;kernel.
+                </p>
+            </div>
+            <div class="feature-card">
+                <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke-linecap="round" /><circle cx="20" cy="18" r="2" /></svg></div>
+                <h3>Multi-site</h3>
+                <p>
+                    One binary, many manifests. Each <code>[[site]]</code> in
+                    <code>config.toml</code> bakes its own manifest, dispatched
+                    by <code>Host</code> header.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <section class="code-preview">
+        <div>
+            <h2>The shape of a page.</h2>
+            <p>
+                Drop a single <code>content.html</code>. The build walks
+                your tree, renders your templates, compresses three
+                encodings, and bakes a manifest the runtime mmap's into
+                place. No metadata sidecar — alias, head tags, queries
+                live inline as Jinja-style tags.
+            </p>
+            <p>You write content. The engine handles the wire.</p>
+            <a href="/quickstart" class="btn">See the quickstart <span class="arrow">&rarr;</span></a>
+        </div>
+
+        <div class="code-card">
+            <div class="code-card-header">
+                <div class="dots"><span></span><span></span><span></span></div>
+                web/main/content/news/content.html
+            </div>
+            <pre><code><span class="kw">&#123;% extends</span> <span class="str">"def"</span> <span class="kw">%&#125;</span>
+<span class="kw">&#123;% alias</span> <span class="str">"/news"</span> <span class="kw">%&#125;</span>
+
+<span class="kw">&#123;% block</span> <span class="fn">head</span> <span class="kw">%&#125;</span>
+<span class="pun">&lt;</span><span class="ty">title</span><span class="pun">&gt;</span>Latest news<span class="pun">&lt;/</span><span class="ty">title</span><span class="pun">&gt;</span>
+<span class="kw">&#123;% endblock %&#125;</span>
+
+<span class="kw">&#123;% block</span> <span class="fn">content</span> <span class="kw">%&#125;</span>
+<span class="pun">&lt;</span><span class="ty">ul</span><span class="pun">&gt;</span>
+  <span class="kw">&#123;% hole</span> <span class="str">"SELECT title, summary FROM news ORDER BY date DESC"</span> <span class="kw">%&#125;</span>
+    <span class="pun">&lt;</span><span class="ty">li</span><span class="pun">&gt;&lt;</span><span class="ty">b</span><span class="pun">&gt;</span><span class="kw">&#123;&#123;</span> <span class="fn">row.title</span> <span class="kw">&#125;&#125;</span><span class="pun">&lt;/</span><span class="ty">b</span><span class="pun">&gt;</span> &mdash; <span class="kw">&#123;&#123;</span> <span class="fn">row.summary</span> <span class="kw">&#125;&#125;</span><span class="pun">&lt;/</span><span class="ty">li</span><span class="pun">&gt;</span>
+  <span class="kw">&#123;% endhole %&#125;</span>
+<span class="pun">&lt;/</span><span class="ty">ul</span><span class="pun">&gt;</span>
+<span class="kw">&#123;% endblock %&#125;</span></code></pre>
+        </div>
+    </section>
+
+    <section class="features">
+        <div class="features-head">
+            <span class="eyebrow">Live, right now</span>
+            <h2>Recent activity from the engine's database.</h2>
+            <p>
+                The list below is rendered into this page at request time. The
+                envelope was baked. The rows weren't.
+            </p>
+        </div>
+
+        <ul class="news-list">
+            {% hole "SELECT title, summary, date FROM news ORDER BY date DESC LIMIT 4" %}
+            <li>
+                <strong>{{ .title }}</strong> {{ .summary }}
+                <time>{{ .date }}</time>
+            </li>
+            {% endhole %}
+        </ul>
+    </section>
+
+</main>
+{{ end }}

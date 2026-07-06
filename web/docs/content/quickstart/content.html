@@ -1,0 +1,101 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>Quickstart — Gogogo</title>
+<meta name="description" content="Get a Gogogo site building and serving in five minutes.">
+{{ end }}
+
+{{ define "content" }}
+<h1>Quickstart</h1>
+<p class="lede">
+    Five minutes from <code>git clone</code> to a baked, running site.
+    No frameworks. No package manager. Just Go, a templates folder, and a
+    few HTML files.
+</p>
+
+<h2>1. Clone and build</h2>
+<p>
+    Gogogo is a single Go module. The build CLI walks your <code>web/</code>
+    tree and writes a manifest the runtime mmap's into place.
+</p>
+<pre><code><span class="com"># in your project root</span>
+<span class="kw">go</span> mod tidy
+<span class="kw">go</span> build ./cmd/build
+<span class="kw">go</span> build ./cmd/main</code></pre>
+
+<h2>2. Add a page</h2>
+<p>
+    Make a directory under <code>web/main/content/</code>. Drop a
+    <code>content.html</code>. The three engine directives
+    (<code>extends</code>, <code>alias</code>, <code>hole</code>) live
+    inline; everything else is stdlib <code>text/template</code> syntax.
+</p>
+<pre><code><span class="com">&lt;!-- web/main/content/news/content.html --&gt;</span>
+<span class="kw">&#123;% extends</span> <span class="str">"def"</span> <span class="kw">%&#125;</span>
+<span class="kw">&#123;% alias</span> <span class="str">"/news"</span> <span class="kw">%&#125;</span>
+
+<span class="kw">&#123;&#123; define</span> <span class="str">"head"</span> <span class="kw">&#125;&#125;</span>
+&lt;<span class="ty">title</span>&gt;Latest news&lt;/<span class="ty">title</span>&gt;
+<span class="kw">&#123;&#123; end &#125;&#125;</span>
+
+<span class="kw">&#123;&#123; define</span> <span class="str">"content"</span> <span class="kw">&#125;&#125;</span>
+&lt;<span class="ty">h1</span>&gt;Latest&lt;/<span class="ty">h1</span>&gt;
+&lt;<span class="ty">ul</span>&gt;
+  <span class="kw">&#123;% hole</span> <span class="str">"SELECT title, summary FROM news ORDER BY date DESC"</span> <span class="kw">%&#125;</span>
+    &lt;<span class="ty">li</span>&gt;&lt;<span class="ty">b</span>&gt;<span class="kw">&#123;&#123;</span> <span class="fn">.title</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">b</span>&gt; <span class="kw">&#123;&#123;</span> <span class="fn">.summary</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">li</span>&gt;
+  <span class="kw">&#123;% endhole %&#125;</span>
+&lt;/<span class="ty">ul</span>&gt;
+<span class="kw">&#123;&#123; end &#125;&#125;</span></code></pre>
+
+<div class="callout">
+    <p>
+        <strong>Convention.</strong> Each page is its own directory.
+        <code>content.html</code> is the only required file. Sibling
+        <code>style.css</code> and <code>script.js</code> get
+        auto-discovered and linked in. The alias defaults to the
+        directory name; <code>&#123;% alias %&#125;</code> overrides
+        when you need something else (like <code>"/"</code>).
+    </p>
+</div>
+
+<h2>3. Build it</h2>
+<pre><code><span class="kw">./build</span> -force <span class="com"># first run; later runs are incremental</span></code></pre>
+<p>
+    Build walks every <code>[[site]]</code> in <code>web/config.toml</code>
+    and writes a manifest per site:
+</p>
+<pre><code><span class="com">[main] Starting build...</span>
+Gogogo V4 [main]: 17 routes (1 with holes, 0 disk-served)
+Gogogo V4 [docs]: 8 routes (2 with holes, 1 disk-served)</code></pre>
+
+<h2>4. Serve it</h2>
+<pre><code><span class="kw">./main</span> <span class="com"># spawns SO_REUSEPORT bouncers, one per CPU</span></code></pre>
+<p>
+    Visit <code>http://localhost:8082/news</code> &mdash; the page is served
+    from a brotli-compressed payload baked into the manifest, with the
+    <code>recent</code> hole spliced from a fresh SQL query.
+</p>
+
+<h2>5. Edit, hot-reload, ship</h2>
+<p>
+    Rebuild with <code>./build</code>, then send <code>SIGHUP</code> to the
+    server. The new manifest swaps in atomically; in-flight requests finish
+    against the old one.
+</p>
+<pre><code><span class="kw">./build</span>
+<span class="kw">kill</span> -HUP $(<span class="kw">pgrep</span> main)</code></pre>
+
+<h2>What's next</h2>
+<ul>
+    <li><a href="/concepts/holes">Holes</a> &mdash; how live data gets into a baked envelope.</li>
+    <li><a href="/concepts/actionfile">ActionFile</a> &mdash; serving large media without bloating the manifest.</li>
+    <li><a href="/reference/config">Config reference</a> &mdash; every <code>web/config.toml</code> field.</li>
+</ul>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/" class="prev"><small>Previous</small>Overview</a>
+    <a href="/concepts/holes" class="next"><small>Next</small>Holes &rarr;</a>
+</nav>
+{{ end }}

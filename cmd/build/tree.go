@@ -7,7 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/BurntSushi/toml"
+	"gogogo/modules/build"
+
 	"github.com/fatih/color"
 )
 
@@ -29,29 +30,24 @@ type TreeCommand struct {
 }
 
 func (t *TreeCommand) Execute(rootPath string) error {
-	// First pass: collect all aliases
+	// First pass: collect all aliases. Each directory's content.html (if
+	// present) is byte-scanned for a {% alias "X" %} tag — same source
+	// of truth the build's processAlias uses.
 	if err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
-			metaPath := filepath.Join(path, "meta.toml")
-			if _, err := os.Stat(metaPath); err == nil {
-				data, err := os.ReadFile(metaPath)
-				if err != nil {
-					return err
-				}
-
-				meta := &MetaData{}
-				if err := toml.Unmarshal(data, meta); err != nil {
-					return err
-				}
-
-				if meta.Alias != "" {
-					relPath, _ := filepath.Rel(rootPath, path)
-					t.aliasMap[relPath] = meta.Alias
-				}
-			}
+		if !info.IsDir() {
+			return nil
+		}
+		contentPath := filepath.Join(path, "content.html")
+		src, err := os.ReadFile(contentPath)
+		if err != nil {
+			return nil
+		}
+		if alias := build.ScanAlias(src); alias != "" {
+			relPath, _ := filepath.Rel(rootPath, path)
+			t.aliasMap[relPath] = alias
 		}
 		return nil
 	}); err != nil {

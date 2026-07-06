@@ -1,0 +1,62 @@
+{% extends "def" %}
+{% alias "/catchall/*rest" %}
+
+{{ define "head" }}
+<title>Catch-all routing — Gogogo playground</title>
+<meta name="description" content="Live demo of *catchall capture — match every URL under a prefix into one binding.">
+{{ end }}
+
+{{ define "content" }}
+<h1>Catch-all routing</h1>
+<p class="lede">
+    This page is registered at <code>/catchall/*rest</code>. Everything
+    after <code>/catchall/</code> &mdash; one segment or twenty &mdash;
+    is captured into the single binding <code>rest</code>, joined with
+    slashes. Same machinery as <a href="/playground/x">the param
+    playground</a>, different trie node type.
+</p>
+
+<h2>What the trie captured</h2>
+<dl class="param-display">
+    {% hole "" %}
+    <dt><code>*rest</code></dt>
+    <dd><code>{{ ._params.rest }}</code></dd>
+    {% endhole %}
+</dl>
+
+<h2>Try other URLs</h2>
+<ul>
+    <li><a href="/catchall/files/2024/report.pdf">/catchall/files/2024/report.pdf</a></li>
+    <li><a href="/catchall/api/v1/users/42/posts/7">/catchall/api/v1/users/42/posts/7</a></li>
+    <li><a href="/catchall/just-one">/catchall/just-one</a></li>
+    <li><a href="/catchall/anything/at/all/even/deeply/nested/like/this">/catchall/anything/at/all/even/deeply/nested/like/this</a></li>
+</ul>
+
+<h2>How it differs from <code>:param</code></h2>
+<ul>
+    <li><strong>Greedy.</strong> <code>:section</code> captures exactly one
+        URL segment. <code>*rest</code> captures one OR more.</li>
+    <li><strong>Terminal.</strong> A <code>*name</code> must be the last
+        thing in the pattern. You can have <code>/files/:id/preview</code>
+        but not <code>/files/*path/preview</code>.</li>
+    <li><strong>One per pattern.</strong> Each path can have at most one
+        catch-all, and it must be at the end.</li>
+</ul>
+
+<h2>What this is good for</h2>
+<ul>
+    <li>Proxy-style routes that forward a sub-path to a backend.</li>
+    <li>Static file serving from a single content tree
+        (<code>/static/*path</code> &rarr; <code>dist/static/path</code>).</li>
+    <li>API versioning fallthrough (<code>/api/v1/*rest</code> &rarr; one
+        handler interprets the rest).</li>
+    <li>Any URL space whose depth is unknown at compile time.</li>
+</ul>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/playground/anything" class="prev"><small>Try also</small>Param demo</a>
+    <a href="/concepts/routing" class="next"><small>Back to</small>Routing &rarr;</a>
+</nav>
+{{ end }}

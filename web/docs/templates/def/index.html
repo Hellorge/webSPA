@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    {{ block "head" . }}{{ end }}
+
+    <link rel="preconnect" href="https://rsms.me/" />
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <link rel="stylesheet" type="text/css" href="/static/style.css" />
+
+    {{ if .StyleURL }}<link rel="stylesheet" href="{{ .StyleURL }}" />{{ end }}
+</head>
+
+<body data-page="{{ .PagePath }}">
+    <header class="site-header">
+        <div class="site-header-inner">
+            <a class="brand" href="/">
+                <span class="brand-mark">go</span><span class="brand-name">gogo</span>
+            </a>
+            <nav class="primary-nav">
+                <a href="/quickstart">Quickstart</a>
+                <a href="/concepts/holes">Concepts</a>
+                <a href="/reference/config">Reference</a>
+            </nav>
+        </div>
+    </header>
+
+    {{ block "layout" . }}
+    <div class="docs-shell">
+        <aside class="docs-sidebar-wrap">{{ template "sidebar" . }}</aside>
+        <article class="docs-body">
+            {{ block "content" . }}{{ end }}
+            {{ block "pager" . }}{{ end }}
+        </article>
+    </div>
+    {{ end }}
+
+    <footer class="site-footer">
+        <div class="site-footer-inner">
+            <span class="footer-mark">go<span class="accent">gogo</span></span>
+            <span class="footer-tag">Pre-rendered. Pre-compressed. Pre-routed.</span>
+        </div>
+    </footer>
+
+    {{ if .ScriptURL }}<script src="{{ .ScriptURL }}" defer></script>{{ end }}
+</body>
+</html>

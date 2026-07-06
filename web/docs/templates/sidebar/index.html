@@ -1,0 +1,29 @@
+<nav class="docs-sidebar">
+    <div class="sidebar-section">
+        <h4>Get started</h4>
+        <ul>
+            <li><a href="/" class="{{ if eq .PagePath "/" }}active{{ end }}">Overview</a></li>
+            <li><a href="/quickstart" class="{{ if eq .PagePath "/quickstart" }}active{{ end }}">Quickstart</a></li>
+        </ul>
+    </div>
+
+    <div class="sidebar-section">
+        <h4>Concepts</h4>
+        <ul>
+            <li><a href="/concepts/holes" class="{{ if eq .PagePath "/concepts/holes" }}active{{ end }}">Holes</a></li>
+            <li><a href="/concepts/routing" class="{{ if eq .PagePath "/concepts/routing" }}active{{ end }}">Routing</a></li>
+            <li><a href="/concepts/fastdb" class="{{ if eq .PagePath "/concepts/fastdb" }}active{{ end }}">fastdb</a></li>
+            <li><a href="/concepts/output-cache" class="{{ if eq .PagePath "/concepts/output-cache" }}active{{ end }}">Output cache</a></li>
+            <li><a href="/concepts/gogohttp" class="{{ if eq .PagePath "/concepts/gogohttp" }}active{{ end }}">gogohttp</a></li>
+            <li><a href="/concepts/middleware" class="{{ if eq .PagePath "/concepts/middleware" }}active{{ end }}">Middleware</a></li>
+            <li><a href="/concepts/actionfile" class="{{ if eq .PagePath "/concepts/actionfile" }}active{{ end }}">ActionFile</a></li>
+        </ul>
+    </div>
+
+    <div class="sidebar-section">
+        <h4>Reference</h4>
+        <ul>
+            <li><a href="/reference/config" class="{{ if eq .PagePath "/reference/config" }}active{{ end }}">config.toml</a></li>
+        </ul>
+    </div>
+</nav>

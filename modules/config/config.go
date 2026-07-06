@@ -64,6 +64,18 @@ type Config struct {
 	Build struct {
 		IgnoreFile string `toml:"ignore_file"`
 	} `toml:"build"`
+
+	// Sites lists every content site under web/<name>/. Each maps one or
+	// more Host headers to a separate manifest. The "*" host marks the
+	// fallback site used when the request Host doesn't match any other
+	// site. Studio is *not* in this list — it's a module-managed site
+	// with its own builder (see cmd/build/sites.go).
+	Sites []Site `toml:"site"`
+}
+
+type Site struct {
+	Name  string   `toml:"name"`
+	Hosts []string `toml:"hosts"`
 }
 
 func LoadConfig(path string) (Config, error) {

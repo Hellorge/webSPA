@@ -1,0 +1,105 @@
+{% extends "def" %}
+{% alias "/playground/:section" %}
+
+{{ define "head" }}
+<title>Routing playground — Gogogo</title>
+<meta name="description" content="Live demo of the engine's dynamic routing — change the URL, watch the trie pull params into the page.">
+{{ end }}
+
+{{ define "content" }}
+<h1>Routing playground</h1>
+<p class="lede">
+    This page is one <code>content.html</code> file. Its only alias is
+    <code>/playground/:section</code>. Whatever you put in the second
+    URL segment is captured by the trie as <code>section</code> and
+    handed to the template through <code>&#123;&#123; ._params.section &#125;&#125;</code>
+    at request time. No Go handler. Same machinery that serves every
+    other page.
+</p>
+
+<h2>What the trie matched</h2>
+<dl class="param-display">
+    {% hole "" %}
+    <dt><code>:section</code></dt>
+    <dd><code>{{ ._params.section }}</code></dd>
+    {% endhole %}
+</dl>
+
+<h2>Try other URLs</h2>
+<p>Click any of these — same page, same template, different binding:</p>
+<ul>
+    <li><a href="/playground/about">/playground/about</a></li>
+    <li><a href="/playground/users">/playground/users</a></li>
+    <li><a href="/playground/api-v3-snapshot">/playground/api-v3-snapshot</a></li>
+    <li><a href="/playground/whatever-you-want">/playground/whatever-you-want</a></li>
+</ul>
+
+<h2>How it works</h2>
+<p>The page declares its pattern up top:</p>
+<pre><code><span class="kw">&#123;% alias</span> <span class="str">"/playground/:section"</span> <span class="kw">%&#125;</span></code></pre>
+
+<p>
+    The build extracts the alias and registers it in the manifest's
+    route trie. At request time the trie matches the URL, binds the
+    captured value to the name <code>section</code>, and the dispatcher
+    hands those bindings to the hole renderer. The renderer exposes
+    them inside any hole body via the <code>_params</code> key:
+</p>
+<pre><code><span class="kw">&#123;% hole</span> <span class="str">""</span> <span class="kw">%&#125;</span>
+&lt;<span class="ty">code</span>&gt;<span class="kw">&#123;&#123;</span> <span class="fn">._params.section</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">code</span>&gt;
+<span class="kw">&#123;% endhole %&#125;</span></code></pre>
+
+<p>
+    The hole here uses an empty SQL string. That's a no-DB hole &mdash;
+    the template runs exactly once with just the URL bindings, no rows.
+    Combine an empty hole with a SQL hole and you get a route whose
+    output is part SQL data, part URL parameter:
+</p>
+<pre><code><span class="kw">&#123;% hole</span> <span class="str">"SELECT name, email FROM users WHERE id = ?"</span> <span class="kw">%&#125;</span>
+&lt;<span class="ty">h1</span>&gt;<span class="kw">&#123;&#123;</span> <span class="fn">.name</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">h1</span>&gt;
+&lt;<span class="ty">p</span>&gt;ID requested: <span class="kw">&#123;&#123;</span> <span class="fn">._params.id</span> <span class="kw">&#125;&#125;</span>&lt;/<span class="ty">p</span>&gt;
+<span class="kw">&#123;% endhole %&#125;</span></code></pre>
+
+<h2>What this means for APIs</h2>
+<div class="callout">
+    <p>
+        Bindings reach the response renderer the same way for every
+        path &mdash; whether it ends in a JSON-shaped <code>content.html</code>
+        or an HTML one, whether it queries SQL or just echoes the URL.
+        The engine's content pipeline is enough on its own to express
+        REST-shaped endpoints; you don't need a separate "action handler"
+        path for typical JSON-returning routes.
+    </p>
+    <p>
+        Go handlers (the <code>actions.RouteCtx</code> path) still exist
+        for genuinely-non-HTML responses, server-orchestrated work, or
+        endpoints that need direct access to <code>Req</code> /
+        <code>Resp</code>. But the boundary is "do you need to run Go
+        code per request?" &mdash; not "is it dynamic?"
+    </p>
+</div>
+
+<h2>Caching with bindings</h2>
+<p>
+    The <a href="/concepts/output-cache">output cache</a> keys by
+    <code>(route, bindings hash)</code>, so
+    <code>/playground/about</code> and
+    <code>/playground/users</code> become two separate entries
+    &mdash; each renders once, then serves from cache forever (until
+    its underlying tables write).
+</p>
+<p>
+    For high-cardinality URLs (per-session UUIDs, unique IDs only
+    hit once), the LRU evicts cold entries naturally; those URLs
+    effectively render fresh every time. For repeated dynamic URLs
+    (popular products, common usernames), throughput matches static
+    pages.
+</p>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/routing" class="prev"><small>Back to</small>Routing</a>
+    <a href="/catchall/files" class="next"><small>Try also</small>Catch-all demo &rarr;</a>
+</nav>
+{{ end }}

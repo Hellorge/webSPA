@@ -1,0 +1,172 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>gogohttp — Gogogo concepts</title>
+<meta name="description" content="The transport library: HTTP/1.1 parser, response heads registry, SO_REUSEPORT bouncers, writev-based response writing.">
+{{ end }}
+
+{{ define "content" }}
+<h1>gogohttp</h1>
+<p class="lede">
+    The transport library that sits below gogogo. It speaks HTTP/1.1
+    over TCP, hands the engine a parsed <code>Req</code>, and writes
+    out a <code>Resp</code> with one <code>writev</code> per response.
+    It knows nothing about routes, templates, or SQL. That's gogogo's
+    job. This is the network seam.
+</p>
+
+<h2>Boundary</h2>
+<p>
+    gogohttp does this:
+</p>
+<ul>
+    <li>Accept TCP connections (SO_REUSEPORT-fanned bouncers, one per CPU).</li>
+    <li>Parse HTTP/1.1 requests from byte streams.</li>
+    <li>Hold a pre-baked-head registry (Status + Content-Type +
+        Server + …) indexed by <code>uint16</code>.</li>
+    <li>Write responses: pick the head bytes by <code>HeadID</code>,
+        gather them with the body, write via <code>net.Buffers</code>
+        (one <code>writev</code> syscall when the kernel supports it).</li>
+    <li>Manage keep-alive timeouts and connection lifecycle.</li>
+</ul>
+<p>It does not:</p>
+<ul>
+    <li>Know about routes, paths, methods, params.</li>
+    <li>Interpret any specific header (<code>Accept-Encoding</code>,
+        <code>Cache-Control</code>, <code>Authorization</code> &mdash;
+        all just bytes to gogohttp).</li>
+    <li>Render anything. The body is opaque <code>[]byte</code>.</li>
+    <li>Import anything from gogogo. It's a separate package.</li>
+</ul>
+
+<h2>The Req/Resp model</h2>
+<pre><code><span class="kw">type</span> Req <span class="kw">struct</span> {
+    Method  Method
+    Path    []<span class="ty">byte</span>
+    Host    []<span class="ty">byte</span>
+    Headers []Header  <span class="com">// every header line, name and value as byte slices</span>
+    Body    []<span class="ty">byte</span>
+}
+
+<span class="kw">type</span> Resp <span class="kw">struct</span> {
+    HeadID <span class="ty">uint16</span>      <span class="com">// index into the registry</span>
+    Body   []<span class="ty">byte</span>      <span class="com">// opaque payload</span>
+    Stream <span class="kw">func</span>(<span class="ty">io.Writer</span>) <span class="kw">error</span>  <span class="com">// optional streaming hook for sendfile etc.</span>
+}</code></pre>
+<p>
+    Byte slices instead of strings throughout the hot path &mdash;
+    they alias the read buffer, no copy until the handler asks for
+    one. Headers iteration is a slice walk; the engine decides which
+    names it cares about.
+</p>
+
+<h2>The head registry</h2>
+<p>
+    Every distinct HTTP response head is registered once and indexed.
+    Examples:
+</p>
+<pre><code><span class="kw">id</span> := reg.<span class="fn">AddMime</span>(<span class="str">"text/html; charset=utf-8"</span>)
+<span class="kw">id</span> := reg.<span class="fn">AddMimeWithEncoding</span>(<span class="str">"text/html; charset=utf-8"</span>, <span class="str">"br"</span>)
+<span class="kw">id</span> := reg.<span class="fn">AddAllow</span>(<span class="str">"GET, POST"</span>)</code></pre>
+<p>
+    Each <code>AddX</code> assembles the canonical head bytes once
+    (<code>HTTP/1.1 200 OK\r\nContent-Type: …\r\nContent-Encoding: …\r\nServer: Gogogo\r\n</code>)
+    and returns its registry index. At response time the engine sets
+    <code>resp.HeadID = X</code>; the writer concatenates registry[X]
+    + body + <code>"\r\n"</code> via <code>net.Buffers</code>.
+</p>
+<p>
+    Net effect: no per-request <code>fmt.Sprintf</code> for headers,
+    no string assembly, no map allocations. The cost of "set Content-
+    Type and Server and the status line" is reduced to a uint16 store.
+</p>
+
+<h2>Encoding variants on the engine side</h2>
+<p>
+    gogohttp doesn't know what <code>Accept-Encoding</code> means.
+    gogogo does. The engine stores three head IDs per encoded resource
+    (one each for identity, gzip, brotli), looks at the request's
+    headers, and sets <code>resp.HeadID</code> to the right one.
+</p>
+<pre><code><span class="kw">func</span> <span class="fn">pickVariant</span>(entry *router.RouteEntry, req *gogohttp.Req) *router.Variant {
+    <span class="com">// gogogo's logic — gogohttp stays out of it</span>
+    <span class="kw">for</span> i := <span class="num">0</span>; i &lt; req.NHeaders; i++ {
+        <span class="kw">if</span> !bytes.<span class="fn">EqualFold</span>(req.Headers[i].Name, []<span class="ty">byte</span>(<span class="str">"Accept-Encoding"</span>)) {
+            <span class="kw">continue</span>
+        }
+        v := req.Headers[i].Value
+        <span class="kw">if</span> entry.Variants[router.EncBrotli].DataLen &gt; <span class="num">0</span> &amp;&amp; bytes.<span class="fn">Contains</span>(v, []<span class="ty">byte</span>(<span class="str">"br"</span>)) {
+            <span class="kw">return</span> &amp;entry.Variants[router.EncBrotli]
+        }
+        <span class="kw">if</span> entry.Variants[router.EncGzip].DataLen &gt; <span class="num">0</span> &amp;&amp; bytes.<span class="fn">Contains</span>(v, []<span class="ty">byte</span>(<span class="str">"gzip"</span>)) {
+            <span class="kw">return</span> &amp;entry.Variants[router.EncGzip]
+        }
+        <span class="kw">break</span>
+    }
+    <span class="kw">return</span> &amp;entry.Variants[router.EncIdentity]
+}</code></pre>
+
+<h2>Why the split</h2>
+<div class="callout">
+    <p>
+        Web frameworks usually bundle the transport with the
+        application protocol &mdash; one library handles both raw TCP
+        framing AND knows what <code>Accept-Encoding</code> means.
+        That couples decisions that should stay independent.
+    </p>
+    <p>
+        With the split: changing how we negotiate encodings doesn't
+        touch the parser. Adding a new compression (zstd) is an
+        engine-side variant slot; gogohttp doesn't learn anything new.
+        Swapping the parser for an io_uring backend doesn't break
+        encoding negotiation. Each library does one thing.
+    </p>
+</div>
+
+<h2>SO_REUSEPORT bouncers</h2>
+<p>
+    On Linux, gogohttp opens N listening sockets on the same
+    <code>(host, port)</code> using <code>SO_REUSEPORT</code>. The
+    kernel hash-distributes incoming connections across them. Each
+    bouncer is an independent acceptor + connection processor goroutine
+    pool, so there's no single accept lock to contend on. N defaults
+    to <code>runtime.NumCPU()</code>; the only tuning knob.
+</p>
+
+<h2>The response write</h2>
+<p>
+    A typical response leaves the engine like this:
+</p>
+<pre><code>resp.HeadID = <span class="ty">22</span>           <span class="com">// pre-baked text/html|br head</span>
+resp.Body = cachedBytes  <span class="com">// mmap'd or cached []byte</span></code></pre>
+<p>
+    gogohttp's writer assembles a 3-element
+    <code>net.Buffers</code>: the head, the body, the trailing
+    <code>"\r\n"</code>. One <code>writev</code> syscall sends them
+    all. No <code>fmt.Fprintf</code>, no buffered writer flush, no
+    chunk-encoded re-buffering. On Linux when the body is a file
+    descriptor (<code>actions.ActionFile</code>), the writer falls
+    through to <code>sendfile</code> instead &mdash; bytes go kernel-to-kernel.
+</p>
+
+<h2>What lives elsewhere</h2>
+<table>
+    <thead><tr><th>Concern</th><th>Lives in</th></tr></thead>
+    <tbody>
+        <tr><td>Trie routing, params</td><td>modules/router</td></tr>
+        <tr><td>Manifest format</td><td>modules/router</td></tr>
+        <tr><td>SQL + result cache</td><td>modules/fastdb</td></tr>
+        <tr><td>Rendered-page cache</td><td>cmd/main (outputCache)</td></tr>
+        <tr><td>Content templates, hole renderer</td><td>cmd/main (composeHoleBody)</td></tr>
+        <tr><td>Encoding negotiation</td><td>cmd/main (pickVariant)</td></tr>
+        <tr><td>HTTP parse + response write + listener</td><td><strong>modules/gogohttp</strong></td></tr>
+    </tbody>
+</table>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/output-cache" class="prev"><small>Previous</small>Output cache</a>
+    <a href="/concepts/middleware" class="next"><small>Next</small>Middleware &rarr;</a>
+</nav>
+{{ end }}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    {{ block "head" . }}{{ end }}
+
+    <script>
+        window.isSPAMode = {{ if .IsSPAMode }}true{{ else }}false{{ end }};
+    </script>
+    <script type="module" src="/static/app.js"></script>
+    <link rel="stylesheet" type="text/css" href="/static/style.css" />
+
+    {{ if .StyleURL }}<link rel="stylesheet" href="{{ .StyleURL }}" />{{ end }}
+</head>
+
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/about">About</a>
+        <a href="/showcase">Showcase</a>
+    </nav>
+    <div id="app">
+        {{ block "content" . }}{{ end }}
+    </div>
+
+    {{ if .ScriptURL }}<script src="{{ .ScriptURL }}" defer></script>{{ end }}
+</body>
+</html>

@@ -1,0 +1,186 @@
+{% extends "def" %}
+
+{{ define "head" }}
+<title>fastdb — Gogogo concepts</title>
+<meta name="description" content="Read-side SQLite layer with table-aware result caching, smart invalidation, and a subscribe API the renderer hooks into.">
+{{ end }}
+
+{{ define "content" }}
+<h1>fastdb</h1>
+<p class="lede">
+    Gogogo's read-side SQLite layer. Talks to <code>modernc.org/sqlite/lib</code>
+    directly &mdash; no <code>database/sql</code> wrapper, no per-request
+    prepare, no row-shape reflection. Plus a query-result cache that
+    knows which tables each cached query reads from, and invalidates
+    by table-write signal &mdash; not by TTL.
+</p>
+
+<h2>What's in it</h2>
+<ul>
+    <li><strong>Connection pool.</strong> Fixed-size, one libc TLS per
+        conn. SQLite WAL mode lets many readers run in parallel; the
+        pool just hands one out per query.</li>
+    <li><strong>Prepared-statement cache per connection.</strong> A SQL
+        string is compiled once, then reused. Repeat queries skip
+        SQLite's parser entirely.</li>
+    <li><strong>Query-result cache.</strong> Materialised rows
+        keyed by SQL text, with the tables each query references
+        recorded for invalidation.</li>
+    <li><strong>Update-hook invalidation.</strong> SQLite calls back on
+        every INSERT/UPDATE/DELETE; we drop only the cache entries
+        referencing the written table.</li>
+    <li><strong>data_version safety net.</strong> A 1Hz watcher catches
+        writes that bypass our pool entirely (CLI sessions, other
+        processes).</li>
+    <li><strong>Per-table bypass.</strong> Tables with sustained high
+        write rates flip out of caching automatically so they don't
+        thrash everyone else's entries.</li>
+    <li><strong>Subscribe API.</strong> Anything else (e.g. the
+        renderer's output cache) can listen for write events and
+        invalidate its own state in lockstep.</li>
+</ul>
+
+<h2>The cache, end to end</h2>
+
+<h3>Lookup</h3>
+<pre><code>rows, err := fastdb.QueryEach(<span class="str">"SELECT title FROM news ORDER BY date DESC LIMIT 4"</span>, visit)</code></pre>
+<p>The pool does this:</p>
+<ol>
+    <li>Hash the SQL string &rarr; cache key.</li>
+    <li>Look up the table set we extracted last time (or extract once
+        if first occurrence): scan for <code>FROM</code> / <code>JOIN</code>
+        + identifier. Subqueries, CTEs, quoted-identifier tables &rarr;
+        nil = "uncacheable, run fresh."</li>
+    <li>Check each referenced table's bypass state. If any is in a
+        cool-down (recently wrote heavily) &rarr; skip cache, run
+        fresh.</li>
+    <li>Map probe by key. Hit &rarr; iterate cached rows, call
+        <code>visit</code>. Miss &rarr; run SQLite, snapshot each row,
+        cache, then call <code>visit</code>.</li>
+</ol>
+
+<h3>Invalidation</h3>
+<p>
+    SQLite's <code>sqlite3_update_hook</code> fires on every row
+    write, with <code>(op, table, rowid)</code>. fastdb's callback:
+</p>
+<ol>
+    <li>Bump the table's per-second write counter. If past
+        <code>bypass_threshold</code> &rarr; flip to bypass for the
+        cool-down window.</li>
+    <li>Look up the reverse index: <code>map[table]&rarr;set[cacheKey]</code>.
+        Drop those keys. Other tables' entries are untouched.</li>
+    <li>Fan out to any subscribers (next section).</li>
+</ol>
+
+<h3>The data_version watcher</h3>
+<p>
+    SQLite's <code>PRAGMA data_version</code> returns a number that
+    increments when ANY OTHER connection writes to the database. Our
+    watcher polls it once per second on one pool connection. On a
+    bump:
+</p>
+<ul>
+    <li>Flush the cache wholesale (some other connection wrote and
+        the update_hook didn't fire for us).</li>
+    <li>Fan out a <code>table == ""</code> notification to
+        subscribers, meaning "treat all tables as potentially
+        modified."</li>
+</ul>
+<p>
+    Worst-case staleness for external writes: about one second.
+    Tunable per pool if your workload needs tighter.
+</p>
+
+<h2>Subscribe API</h2>
+<p>
+    Anything that caches state derived from the database can subscribe
+    to write events and invalidate in lockstep:
+</p>
+<pre><code><span class="ty">sub</span> := fastdb.<span class="fn">Subscribe</span>(<span class="kw">func</span>(table <span class="ty">string</span>) {
+    <span class="com">// table == "" means "all may have changed"</span>
+    myCache.<span class="fn">InvalidateForTable</span>(table)
+})
+<span class="kw">defer</span> sub.<span class="fn">Close</span>()</code></pre>
+<p>
+    Callbacks run on the writing connection's thread (inside SQLite's
+    hook). Keep them short. The renderer's output cache uses this:
+    one subscription invalidates rendered-page entries the moment a
+    relevant row changes.
+</p>
+
+<h2>Per-table bypass &mdash; why and how</h2>
+<p>
+    A table that takes thousands of writes per second wastes cache
+    work if we keep invalidating + re-populating. fastdb detects the
+    pattern automatically:
+</p>
+<ul>
+    <li>Each invalidation increments the table's writes-in-window counter.</li>
+    <li>If writes-in-window exceeds <code>bypassWriteThreshold</code>
+        (default 200/sec), the table flips to <strong>bypass</strong>
+        for <code>bypassCooldown</code> (default 5 sec).</li>
+    <li>Queries touching that table skip the cache during bypass.
+        Other queries on quiet tables stay cached.</li>
+    <li>After cooldown the table re-enters normal operation.</li>
+</ul>
+<p>
+    Net effect: write-heavy tables don't poison the cache for the
+    rest. Read-heavy tables stay aggressively cached. No per-installation
+    tuning required.
+</p>
+
+<h2>Live: hit count</h2>
+<p>
+    The number below comes from a live SQL query against the news
+    table &mdash; cached by fastdb the first time you load this
+    page, and served from memory on every subsequent hit until the
+    table changes.
+</p>
+<p class="metric">
+    News rows in DB:
+    <strong>{% hole "SELECT COUNT(*) AS n FROM news" %}{{ .n }}{% endhole %}</strong>
+</p>
+
+<h2>What fastdb deliberately doesn't do</h2>
+<div class="callout">
+    <ul>
+        <li><strong>It's not a generic SQLite library.</strong> Read-only
+            from this package's perspective; writes still go through
+            the standard <code>modules/db</code> path. The split exists
+            because read patterns and write patterns want very different
+            connection pool shapes.</li>
+        <li><strong>No automatic prepared-statement param caching by
+            value.</strong> Today the cache keys on the raw SQL string.
+            <code>WHERE id = 1</code> and <code>WHERE id = 2</code> are
+            two separate cache entries. Bind-value support is a planned
+            extension, not present today.</li>
+        <li><strong>No incremental view maintenance.</strong> Writes
+            invalidate, they don't update-in-place. For workloads where
+            re-render after a write becomes the bottleneck, this is
+            where IVM would slot in &mdash; not built yet.</li>
+        <li><strong>No mid-row escape hatches.</strong> A query either
+            cacheable in full or skipped entirely. Per-row staleness
+            tolerance isn't a knob.</li>
+    </ul>
+</div>
+
+<h2>Why this exists separately</h2>
+<p>
+    Stdlib <code>database/sql</code> is generic; it can't expose
+    SQLite-specific things like <code>update_hook</code> or
+    <code>data_version</code>. Generic Go cache libraries (Ristretto,
+    BigCache, freecache) don't know about SQL, so they can't drive
+    table-level invalidation. fastdb sits in the gap: a SQLite-aware
+    cache that the rest of the engine subscribes to. We own it because
+    every cache layer above it (the renderer's, future ones) needs the
+    same write-event channel to stay correct.
+</p>
+{{ end }}
+
+{{ define "pager" }}
+<nav class="pager">
+    <a href="/concepts/holes" class="prev"><small>Previous</small>Holes</a>
+    <a href="/concepts/output-cache" class="next"><small>Next</small>Output cache &rarr;</a>
+</nav>
+{{ end }}
